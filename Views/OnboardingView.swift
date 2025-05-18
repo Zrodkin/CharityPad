@@ -8,6 +8,7 @@ struct OnboardingView: View {
     @State private var safariDismissed = false
     @State private var isPolling = false
     @State private var pollingTimer: Timer? = nil
+    @State private var notificationObserver: NSObjectProtocol? = nil
     @AppStorage("hasCompletedOnboarding") private var hasCompletedOnboarding: Bool = false
     @EnvironmentObject private var organizationStore: OrganizationStore
     @EnvironmentObject private var squareAuthService: SquareAuthService
@@ -161,31 +162,63 @@ struct OnboardingView: View {
             .padding(.vertical, 60)
         }
         .sheet(isPresented: $showingSafari, onDismiss: {
-            // When Safari is dismissed
-            safariDismissed = true
-            isPolling = true
-            print("Safari sheet dismissed, starting intensive polling")
-            
-            // Start intensive polling
-            if squareAuthService.pendingAuthState != nil {
-                print("Found pending auth state: \(squareAuthService.pendingAuthState!)")
-                // Start polling with shorter interval for better responsiveness
-                startIntensivePolling()
-            } else {
-                print("WARNING: No pending auth state found after Safari dismissed!")
-                isLoading = false
+            // Only handle dismiss manually if we haven't already received the OAuth callback
+            if !squareAuthService.isAuthenticated {
+                safariDismissed = true
+                isPolling = true
+                print("Safari sheet dismissed manually, starting intensive polling")
+                
+                // Start intensive polling
+                if squareAuthService.pendingAuthState != nil {
+                    print("Found pending auth state: \(squareAuthService.pendingAuthState!)")
+                    // Start polling with shorter interval for better responsiveness
+                    startIntensivePolling()
+                } else {
+                    print("WARNING: No pending auth state found after Safari dismissed!")
+                    isLoading = false
+                }
             }
         }) {
             if let url = authURL {
-                // Show Safari directly
+                // Show Safari directly with a custom coordinator to handle URL scheme callbacks
                 SafariView(url: url, onDismiss: {
-                    showingSafari = false
+                    if !squareAuthService.isAuthenticated {
+                        showingSafari = false
+                    }
                 })
             }
         }
         // Check authentication on appearance
         .onAppear {
             squareAuthService.checkAuthentication()
+            
+            // Set up notification observer for OAuth callback
+            notificationObserver = NotificationCenter.default.addObserver(
+                forName: .squareOAuthCallback,
+                object: nil,
+                queue: .main
+            ) { notification in
+                print("OnboardingView: Received OAuth callback notification")
+                
+                // Handle the notification
+                handleOAuthCallback(notification)
+                
+                // Close Safari view if open
+                if showingSafari {
+                    showingSafari = false
+                }
+            }
+        }
+        .onDisappear {
+            // Clean up when view disappears
+            pollingTimer?.invalidate()
+            pollingTimer = nil
+            
+            // Remove notification observer
+            if let observer = notificationObserver {
+                NotificationCenter.default.removeObserver(observer)
+                notificationObserver = nil
+            }
         }
         // Monitor authentication state changes
         .onReceive(squareAuthService.$isAuthenticated) { isAuthenticated in
@@ -196,7 +229,51 @@ struct OnboardingView: View {
                 // Reset loading state in case it was active
                 isLoading = false
                 safariDismissed = false
+                
+                // Cancel any active polling
+                pollingTimer?.invalidate()
+                pollingTimer = nil
             }
+        }
+    }
+    
+    // Handle OAuth callback notification
+    private func handleOAuthCallback(_ notification: Notification) {
+        // Extract success/error from notification userInfo
+        if let userInfo = notification.userInfo,
+           let success = userInfo["success"] as? Bool {
+            print("OAuth callback received with success: \(success)")
+            
+            if success {
+                // Stop polling and check authentication
+                pollingTimer?.invalidate()
+                pollingTimer = nil
+                
+                // Reset state variables
+                isLoading = false
+                safariDismissed = false
+                
+                print("Safari should be automatically closed by SafariView")
+                
+                // Directly check authentication to update state
+                squareAuthService.checkAuthentication()
+            } else {
+                // Handle error
+                if let error = userInfo["error"] as? String {
+                    print("OAuth error: \(error)")
+                }
+                
+                // Reset state
+                isLoading = false
+                safariDismissed = false
+            }
+        }
+        // If notification contains a URL object
+        else if let url = notification.object as? URL {
+            print("Received OAuth callback with URL: \(url)")
+            
+            // Process URL if needed
+            // This might be needed if your AppDelegate/SceneDelegate is passing the raw URL
         }
     }
     
@@ -282,13 +359,5 @@ struct FeatureRow: View {
             Text(text)
                 .foregroundColor(Color.gray.opacity(0.8))
         }
-    }
-}
-
-struct OnboardingView_Previews: PreviewProvider {
-    static var previews: some View {
-        OnboardingView()
-            .environmentObject(OrganizationStore())
-            .environmentObject(SquareAuthService())
     }
 }

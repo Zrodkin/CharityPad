@@ -10,19 +10,29 @@ class AppDelegate: NSObject, UIApplicationDelegate {
   func application(_ app: UIApplication, open url: URL, options: [UIApplication.OpenURLOptionsKey : Any] = [:]) -> Bool {
       print("AppDelegate received URL: \(url)")
 
-      // We're using the server-side polling approach, so direct callbacks are not expected
-      // If you uncomment this code, it will interfere with the server polling approach
-      
-      /*
-      // Handle Square OAuth callback
-      if url.scheme == "charitypad" && url.host == "callback" {
-          // ... direct callback code ...
-      }
-      */
-      
-      // Still post the notification for backward compatibility
+      // Handle Square OAuth callback via custom URL scheme
       if url.scheme == "charitypad" {
           print("Received callback with URL: \(url)")
+          
+          // Check if this is our oauth-complete callback
+          if url.host == "oauth-complete" {
+              // Extract success parameter
+              let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+              let success = components?.queryItems?.first(where: { $0.name == "success" })?.value == "true"
+              let error = components?.queryItems?.first(where: { $0.name == "error" })?.value
+              
+              // Post notification with success/error info
+              NotificationCenter.default.post(
+                  name: .squareOAuthCallback,
+                  object: nil,
+                  userInfo: ["success": success, "error": error as Any]
+              )
+              
+              print("OAuth flow completed with success: \(success)")
+              return true
+          }
+          
+          // For other charitypad:// URLs, just post the notification with the URL
           NotificationCenter.default.post(
               name: .squareOAuthCallback,
               object: url

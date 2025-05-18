@@ -1,9 +1,3 @@
-//
-//  SceneDelegate.swift
-//  CharityPadWSquare
-//
-//  Created by Wilkes Shluchim on 5/15/25.
-//
 import UIKit
 import SwiftUI
 
@@ -26,13 +20,37 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
             self.window = window
             window.makeKeyAndVisible()
         }
+        
+        // Handle any URLs that were passed at launch
+        if let urlContext = connectionOptions.urlContexts.first {
+            self.scene(scene, openURLContexts: [urlContext])
+        }
     }
 
     func scene(_ scene: UIScene, openURLContexts URLContexts: Set<UIOpenURLContext>) {
         // Handle URL scheme callbacks (e.g., for Square OAuth)
         if let url = URLContexts.first?.url, url.scheme == "charitypad" {
-            NotificationCenter.default.post(name: .squareOAuthCallback, object: url)
+            print("SceneDelegate received URL: \(url)")
+            
+            // Check if this is the oauth-complete callback
+            if url.host == "oauth-complete" {
+                // Extract success parameter
+                let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+                let success = components?.queryItems?.first(where: { $0.name == "success" })?.value == "true"
+                let error = components?.queryItems?.first(where: { $0.name == "error" })?.value
+                
+                // Post notification with success/error info
+                NotificationCenter.default.post(
+                    name: .squareOAuthCallback,
+                    object: nil,
+                    userInfo: ["success": success, "error": error as Any]
+                )
+                
+                print("OAuth flow completed with success: \(success)")
+            } else {
+                // For other URLs, just post the notification with the URL
+                NotificationCenter.default.post(name: .squareOAuthCallback, object: url)
+            }
         }
     }
 }
-

@@ -6,7 +6,7 @@
     <key>CFBundleIdentifier</key>
     <string>com.baismenachem.CharityPadWSquare</string>
     
-    <!-- Executable file name - THIS IS THE MISSING KEY -->
+    <!-- Executable file name -->
     <key>CFBundleExecutable</key>
     <string>$(EXECUTABLE_NAME)</string>
     
@@ -62,6 +62,13 @@
                 <string>charitypad</string>
             </array>
         </dict>
+    </array>
+    
+    <!-- LSApplicationQueriesSchemes - allows your app to open Safari for OAuth -->
+    <key>LSApplicationQueriesSchemes</key>
+    <array>
+        <string>https</string>
+        <string>http</string>
     </array>
     
     <!-- Square Reader External Accessory Protocols -->

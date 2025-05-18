@@ -46,12 +46,24 @@ class SquareAuthService: ObservableObject {
         checkAuthentication()
     }
     
-    // Replace the checkAuthentication method
     func checkAuthentication() {
+        // First check if we can use locally stored tokens
+        if let _ = accessToken,
+           let expirationDate = tokenExpirationDate,
+           expirationDate > Date() {
+            print("Found valid local token, checking with server...")
+        } else {
+            print("No valid local token found")
+        }
+        
+        // Always verify with the server, regardless of local token presence
         guard let url = URL(string: "\(SquareConfig.backendBaseURL)\(SquareConfig.statusEndpoint)?organization_id=\(SquareConfig.organizationId)") else {
+            print("Invalid status URL")
             isAuthenticated = false
             return
         }
+        
+        print("Checking authentication status with server: \(url)")
         
         URLSession.shared.dataTask(with: url) { [weak self] data, response, error in
             DispatchQueue.main.async {
@@ -63,10 +75,20 @@ class SquareAuthService: ObservableObject {
                     return
                 }
                 
+                // Print HTTP status code for debugging
+                if let httpResponse = response as? HTTPURLResponse {
+                    print("Status code: \(httpResponse.statusCode)")
+                }
+                
                 guard let data = data else {
+                    print("No data received")
                     self.isAuthenticated = false
                     return
                 }
+                
+                // Print raw response for debugging
+                let responseString = String(data: data, encoding: .utf8) ?? "Unable to decode response"
+                print("Authentication status response: \(responseString)")
                 
                 do {
                     if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
@@ -74,15 +96,33 @@ class SquareAuthService: ObservableObject {
                             self.isAuthenticated = connected
                             print("Authentication status check: isAuthenticated = \(connected)")
                             
+                            // If we're connected, update the merchant ID if available
+                            if connected, let merchantId = json["merchant_id"] as? String {
+                                self.merchantId = merchantId
+                                print("Updated merchant ID: \(merchantId)")
+                                
+                                // If expires_at is available, update that too
+                                if let expiresAt = json["expires_at"] as? String {
+                                    let dateFormatter = ISO8601DateFormatter()
+                                    if let expirationDate = dateFormatter.date(from: expiresAt) {
+                                        self.tokenExpirationDate = expirationDate
+                                        print("Updated token expiration: \(expirationDate)")
+                                    }
+                                }
+                            }
+                            
                             // If token needs refresh, trigger refresh
                             if let needsRefresh = json["needs_refresh"] as? Bool, needsRefresh {
+                                print("Token needs refresh, triggering refresh flow")
                                 self.refreshAccessToken()
                             }
                         } else {
                             self.isAuthenticated = false
+                            print("Not connected according to server response")
                         }
                     } else {
                         self.isAuthenticated = false
+                        print("Failed to parse server response as JSON")
                     }
                 } catch {
                     print("Error parsing authentication response: \(error)")
