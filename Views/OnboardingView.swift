@@ -1,8 +1,13 @@
 import SwiftUI
+import SafariServices
 
 struct OnboardingView: View {
     @State private var isLoading = false
-    @State private var showingSquareAuth = false
+    @State private var showingSafari = false
+    @State private var authURL: URL? = nil
+    @State private var safariDismissed = false
+    @State private var isPolling = false
+    @State private var pollingTimer: Timer? = nil
     @AppStorage("hasCompletedOnboarding") private var hasCompletedOnboarding: Bool = false
     @EnvironmentObject private var organizationStore: OrganizationStore
     @EnvironmentObject private var squareAuthService: SquareAuthService
@@ -68,36 +73,58 @@ struct OnboardingView: View {
                 }
                 .padding(.bottom, 40)
                 
-                // Connect button
-                Button(action: {
-                    showingSquareAuth = true
-                }) {
-                    HStack {
-                        if isLoading {
-                            ProgressView()
-                                .progressViewStyle(CircularProgressViewStyle(tint: .white))
-                                .padding(.trailing, 10)
-                            Text("Connecting...")
-                        } else {
-                            Image("square-logo")
-                               .resizable()
-                               .scaledToFit()
-                               .frame(height: 20)
-                               .accessibility(label: Text("Square logo"))
-                            Text("Connect with Square to Get Started")
-                            Image(systemName: "arrow.right")
-                                .padding(.leading, 5)
-                        }
+                // Status view when checking connection
+                if safariDismissed {
+                    VStack(spacing: 16) {
+                        ProgressView()
+                            .progressViewStyle(CircularProgressViewStyle())
+                            .scaleEffect(1.5)
+                            .padding()
+                        
+                        Text("Checking connection status...")
+                            .font(.headline)
+                            .foregroundColor(.black)
                     }
-                    
-                    .padding(.horizontal, 30)
-                    .padding(.vertical, 16)
-                    .background(Color.black)
-                    .foregroundColor(.white)
-                    .cornerRadius(15)
+                    .padding(.vertical)
+                } else {
+                    // Connect button
+                    Button(action: {
+                        if squareAuthService.isAuthenticated {
+                            // If already authenticated, complete onboarding immediately
+                            hasCompletedOnboarding = true
+                            print("Already authenticated, completing onboarding directly")
+                        } else {
+                            // Otherwise start the auth flow directly
+                            isLoading = true
+                            startAuth()
+                        }
+                    }) {
+                        HStack {
+                            if isLoading {
+                                ProgressView()
+                                    .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                                    .padding(.trailing, 10)
+                                Text("Connecting...")
+                            } else {
+                                Image("square-logo")
+                                   .resizable()
+                                   .scaledToFit()
+                                   .frame(height: 20)
+                                   .accessibility(label: Text("Square logo"))
+                                Text("Connect with Square to Get Started")
+                                Image(systemName: "arrow.right")
+                                    .padding(.leading, 5)
+                            }
+                        }
+                        .padding(.horizontal, 30)
+                        .padding(.vertical, 16)
+                        .background(Color.black)
+                        .foregroundColor(.white)
+                        .cornerRadius(15)
+                    }
+                    .disabled(isLoading)
+                    .padding(.horizontal)
                 }
-                .disabled(isLoading)
-                .padding(.horizontal)
                 
                 Text("By continuing, you agree to connect your Square account to CharityPad.\nWe'll use this to process payments and manage your donations.")
                     .font(.caption)
@@ -133,19 +160,116 @@ struct OnboardingView: View {
             .padding(.horizontal, 40)
             .padding(.vertical, 60)
         }
-        .sheet(isPresented: $showingSquareAuth) {
-            // When the Square auth sheet is dismissed, check if we're authenticated
-            if squareAuthService.isAuthenticated {
-                // If successfully connected to Square, mark onboarding as complete
-                hasCompletedOnboarding = true
+        .sheet(isPresented: $showingSafari, onDismiss: {
+            // When Safari is dismissed
+            safariDismissed = true
+            isPolling = true
+            print("Safari sheet dismissed, starting intensive polling")
+            
+            // Start intensive polling
+            if squareAuthService.pendingAuthState != nil {
+                print("Found pending auth state: \(squareAuthService.pendingAuthState!)")
+                // Start polling with shorter interval for better responsiveness
+                startIntensivePolling()
+            } else {
+                print("WARNING: No pending auth state found after Safari dismissed!")
+                isLoading = false
             }
-        } content: {
-            SquareAuthorizationView()
-                .environmentObject(squareAuthService)
+        }) {
+            if let url = authURL {
+                // Show Safari directly
+                SafariView(url: url, onDismiss: {
+                    showingSafari = false
+                })
+            }
+        }
+        // Check authentication on appearance
+        .onAppear {
+            squareAuthService.checkAuthentication()
+        }
+        // Monitor authentication state changes
+        .onReceive(squareAuthService.$isAuthenticated) { isAuthenticated in
+            if isAuthenticated {
+                print("Authentication state changed to true, setting hasCompletedOnboarding")
+                hasCompletedOnboarding = true
+                
+                // Reset loading state in case it was active
+                isLoading = false
+                safariDismissed = false
+            }
+        }
+    }
+    
+    // Function to start more intensive polling after Safari is dismissed
+    private func startIntensivePolling() {
+        // Cancel any existing timer
+        pollingTimer?.invalidate()
+        
+        // Create a timer that checks status more frequently (every 0.5 seconds)
+        pollingTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { _ in
+            squareAuthService.checkPendingAuthorization { success in
+                if success {
+                    print("Polling found successful authentication")
+                    pollingTimer?.invalidate()
+                    pollingTimer = nil
+                    safariDismissed = false
+                }
+            }
+        }
+        
+        // Also immediately check once
+        squareAuthService.checkPendingAuthorization { _ in }
+        
+        // Set a timeout
+        DispatchQueue.main.asyncAfter(deadline: .now() + 30) {
+            guard self.safariDismissed && !self.squareAuthService.isAuthenticated else { return }
+            
+            self.pollingTimer?.invalidate()
+            self.pollingTimer = nil
+            self.isLoading = false
+            self.safariDismissed = false
+            print("Polling timed out after 30 seconds")
+        }
+    }
+    
+    private func startAuth() {
+        print("Starting Square OAuth flow directly...")
+        
+        // Get authorization URL from your backend
+        SquareConfig.generateOAuthURL { url, error, state in
+            DispatchQueue.main.async {
+                if let error = error {
+                    print("Failed to generate authorization URL: \(error.localizedDescription)")
+                    isLoading = false
+                    return
+                }
+                
+                guard let url = url else {
+                    print("Failed to generate authorization URL")
+                    isLoading = false
+                    return
+                }
+                
+                // Set state if available
+                if let state = state {
+                    print("Setting pendingAuthState to: \(state)")
+                    squareAuthService.pendingAuthState = state
+                } else {
+                    print("WARNING: No state returned from generateOAuthURL")
+                }
+                
+                // Store URL and update state
+                self.authURL = url
+                squareAuthService.isAuthenticating = true
+                
+                // Show Safari directly
+                self.showingSafari = true
+            }
         }
     }
 }
 
+// Add the FeatureRow struct back
 struct FeatureRow: View {
     let text: String
     
