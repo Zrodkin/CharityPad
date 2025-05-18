@@ -1,4 +1,5 @@
 import SwiftUI
+import SquareMobilePaymentsSDK
 
 struct CheckoutView: View {
     let amount: Double
@@ -6,6 +7,7 @@ struct CheckoutView: View {
     @EnvironmentObject var donationViewModel: DonationViewModel
     @EnvironmentObject var squareAuthService: SquareAuthService
     @EnvironmentObject var squarePaymentService: SquarePaymentService
+    @EnvironmentObject var squareReaderService: SquareReaderService
     
     @State private var isProcessing = false
     @State private var showingThankYou = false
@@ -16,6 +18,7 @@ struct CheckoutView: View {
     @State private var emailAddress = ""
     @State private var showingReceiptConfirmation = false
     @State private var showingSquareAuth = false
+    @State private var showingReaderSelection = false
     
     @Environment(\.presentationMode) var presentationMode
     @Environment(\.dismiss) var dismiss
@@ -60,15 +63,28 @@ struct CheckoutView: View {
                     .frame(height: 40)
                     .padding(.top)
 
-                // Reader connection status
-                Text(squarePaymentService.connectionStatus)
-                    .font(.system(size: 14))
-                    .foregroundColor(squarePaymentService.isReaderConnected ? .green : .white.opacity(0.7))
-                    .padding(.bottom)
+                // Reader status information
+                VStack(spacing: 10) {
+                    // Connection status
+                    Text(squarePaymentService.connectionStatus)
+                        .font(.system(size: 16))
+                        .foregroundColor(squarePaymentService.isReaderConnected ? .green : .white.opacity(0.7))
+                    
+                    // Display available payment methods if connected
+                    if squarePaymentService.isReaderConnected, !squareReaderService.availableCardInputMethods.isEmpty {
+                        paymentMethodsView
+                    }
+                }
+                .padding(.bottom)
                 
                 // Square reader connection button
                 Button(action: {
-                    squarePaymentService.connectToReader()
+                    // If we have readers, show reader selection sheet
+                    if !squareReaderService.readers.isEmpty {
+                        showingReaderSelection = true
+                    } else {
+                        squarePaymentService.connectToReader()
+                    }
                 }) {
                     HStack {
                         Image(systemName: "creditcard.wireless")
@@ -336,6 +352,11 @@ struct CheckoutView: View {
         .onAppear {
             // Reset the navigation flag
             navigateToRoot = false
+            
+            // Check if the reader is connected
+            if !squarePaymentService.isReaderConnected {
+                squarePaymentService.connectToReader()
+            }
         }
         .onChange(of: navigateToRoot) { _, newValue in
             if newValue {
@@ -347,6 +368,28 @@ struct CheckoutView: View {
             // Handle dismissal if needed
         }) {
             SquareAuthorizationView()
+        }
+        .sheet(isPresented: $showingReaderSelection) {
+            ReaderSelectionSheet()
+                .environmentObject(squareReaderService)
+                .environmentObject(squarePaymentService)
+        }
+    }
+    
+    // Payment methods display
+    private var paymentMethodsView: some View {
+        HStack(spacing: 15) {
+            if squareReaderService.availableCardInputMethods.contains(.tap) {
+                PaymentMethodView(iconName: "creditcard.wireless", label: "Tap")
+            }
+            
+            if squareReaderService.availableCardInputMethods.contains(.dip) {
+                PaymentMethodView(iconName: "creditcard.trianglebadge.exclamationmark", label: "Chip")
+            }
+            
+            if squareReaderService.availableCardInputMethods.contains(.swipe) {
+                PaymentMethodView(iconName: "creditcard", label: "Swipe")
+            }
         }
     }
     
@@ -428,5 +471,188 @@ struct CheckoutView: View {
         }
         
         return nil
+    }
+}
+
+// Helper view for payment methods display
+struct PaymentMethodView: View {
+    let iconName: String
+    let label: String
+    
+    var body: some View {
+        VStack(spacing: 4) {
+            Image(systemName: iconName)
+                .font(.system(size: 24))
+                .foregroundColor(.white)
+            
+            Text(label)
+                .font(.caption)
+                .foregroundColor(.white)
+        }
+        .padding(.vertical, 8)
+        .padding(.horizontal, 12)
+        .background(Color.white.opacity(0.2))
+        .cornerRadius(8)
+    }
+}
+
+// Reader selection sheet
+struct ReaderSelectionSheet: View {
+    @EnvironmentObject var squareReaderService: SquareReaderService
+    @EnvironmentObject var squarePaymentService: SquarePaymentService
+    @Environment(\.dismiss) var dismiss
+    
+    var body: some View {
+        NavigationView {
+            VStack {
+                if squareReaderService.readers.isEmpty {
+                    VStack(spacing: 16) {
+                        Image(systemName: "creditcard.wireless.slash")
+                            .font(.system(size: 50))
+                            .foregroundColor(.gray)
+                            .padding()
+                        
+                        Text("No Readers Found")
+                            .font(.headline)
+                        
+                        Text("Connect a Square reader to process payments")
+                            .font(.subheadline)
+                            .foregroundColor(.gray)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal)
+                        
+                        Button("Pair New Reader") {
+                            squareReaderService.startPairing()
+                            dismiss()
+                        }
+                        .padding()
+                        .background(Color.blue)
+                        .foregroundColor(.white)
+                        .cornerRadius(10)
+                        .padding(.top)
+                    }
+                    .padding()
+                } else {
+                    List {
+                        ForEach(squareReaderService.readers, id: \.serialNumber) { reader in
+                            Button(action: {
+                                // Select this reader
+                                squareReaderService.selectReader(reader)
+                                squarePaymentService.connectToReader()
+                                dismiss()
+                            }) {
+                                HStack {
+                                    // Icon based on reader model
+                                    Image(systemName: readerIconName(reader.model))
+                                        .font(.system(size: 24))
+                                        .foregroundColor(reader.state == .ready ? .green : .gray)
+                                    
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text(squareReaderService.readerModelDescription(reader.model))
+                                            .font(.headline)
+                                        
+                                        Text("S/N: \(reader.serialNumber)")
+                                            .font(.caption)
+                                            .foregroundColor(.gray)
+                                    }
+                                    
+                                    Spacer()
+                                    
+                                    // Status indicator
+                                    if reader.state == .ready {
+                                        Text("Ready")
+                                            .font(.caption)
+                                            .foregroundColor(.white)
+                                            .padding(.horizontal, 8)
+                                            .padding(.vertical, 4)
+                                            .background(Color.green)
+                                            .cornerRadius(8)
+                                    } else {
+                                        Text(squareReaderService.readerStateDescription(reader.state))
+                                            .font(.caption)
+                                            .foregroundColor(.white)
+                                            .padding(.horizontal, 8)
+                                            .padding(.vertical, 4)
+                                            .background(Color.orange)
+                                            .cornerRadius(8)
+                                    }
+                                }
+                                .padding(.vertical, 8)
+                            }
+                            .disabled(reader.state != .ready)
+                        }
+                        
+                        // Add button to pair a new reader
+                        Section(header: Text("Add Reader")) {
+                            Button(action: {
+                                squareReaderService.startPairing()
+                                dismiss()
+                            }) {
+                                HStack {
+                                    Image(systemName: "plus.circle")
+                                        .font(.system(size: 24))
+                                    Text("Pair New Reader")
+                                }
+                                .foregroundColor(.blue)
+                                .padding(.vertical, 8)
+                            }
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Select Reader")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Close") {
+                        dismiss()
+                    }
+                }
+            }
+        }
+    }
+    
+    private func readerIconName(_ model: ReaderModel) -> String {
+        switch model {
+        case .contactlessAndChip:
+            return "creditcard.wireless"
+        case .magstripe:
+            return "creditcard"
+        case .stand:
+            return "ipad.and.iphone"
+        @unknown default:
+            return "questionmark.circle"
+        }
+    }
+}
+    
+    private func readerModelDescription(_ model: ReaderModel) -> String {
+        switch model {
+        case .contactlessAndChip:
+            return "Square Reader for contactless and chip"
+        case .magstripe:
+            return "Square Reader for magstripe"
+        case .stand:
+            return "Square Stand"
+        @unknown default:
+            return "Unknown Reader Model"
+        }
+    }
+    
+    private func readerStateDescription(_ state: ReaderState) -> String {
+        switch state {
+        case .connecting:
+            return "Connecting"
+        case .ready:
+            return "Ready"
+        case .disconnected:
+            return "Disconnected"
+        case .updatingFirmware:
+            return "Updating"
+        case .failedToConnect:
+            return "Failed"
+        @unknown default:
+            return "Unknown"
+        }
     }
 }

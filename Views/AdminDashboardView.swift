@@ -9,6 +9,8 @@ struct AdminDashboardView: View {
     @EnvironmentObject private var kioskStore: KioskStore
     @EnvironmentObject private var donationViewModel: DonationViewModel
     @EnvironmentObject private var squareAuthService: SquareAuthService
+    @EnvironmentObject private var squarePaymentService: SquarePaymentService
+    @EnvironmentObject private var squareReaderService: SquareReaderService
     
     var body: some View {
         NavigationSplitView {
@@ -36,6 +38,11 @@ struct AdminDashboardView: View {
                         Label("Timeout Settings", systemImage: "clock")
                     }
                     
+                    // Add the Reader Management link
+                    NavigationLink(value: "readers") {
+                        Label("Card Readers", systemImage: "creditcard.wireless")
+                    }
+                    
                     Spacer()
                         .frame(height: 20)
                         .tag(nil as String?)
@@ -61,6 +68,19 @@ struct AdminDashboardView: View {
                             .font(.caption)
                             .foregroundColor(squareAuthService.isAuthenticated ? .green : .red)
                     }
+                    
+                    // Display reader status if authenticated
+                    if squareAuthService.isAuthenticated {
+                        HStack {
+                            Circle()
+                                .fill(squarePaymentService.isReaderConnected ? Color.green : Color.orange)
+                                .frame(width: 10, height: 10)
+                            
+                            Text(squarePaymentService.connectionStatus)
+                                .font(.caption)
+                                .foregroundColor(squarePaymentService.isReaderConnected ? .green : .orange)
+                        }
+                    }
                 }
                 .padding(.horizontal)
                 .padding(.vertical, 5)
@@ -83,6 +103,25 @@ struct AdminDashboardView: View {
                 .disabled(!squareAuthService.isAuthenticated)
             }
             .navigationTitle("Admin Dashboard")
+            .onChange(of: squareAuthService.isAuthenticated) { _, isAuthenticated in
+                if isAuthenticated {
+                    // Initialize the SDK if authenticated
+                    squarePaymentService.initializeSDK()
+                }
+            }
+            .onAppear {
+                // Start monitoring for readers
+                squareReaderService.startMonitoring()
+                
+                // Initialize SDK if authenticated
+                if squareAuthService.isAuthenticated {
+                    squarePaymentService.initializeSDK()
+                }
+            }
+            .onDisappear {
+                // Stop monitoring when view disappears
+                squareReaderService.stopMonitoring()
+            }
         } detail: {
             // Detail content based on selection
             if let selectedTab = selectedTab {
@@ -99,6 +138,10 @@ struct AdminDashboardView: View {
                 case "timeout":
                     TimeoutSettingsView()
                         .environmentObject(kioskStore)
+                case "readers":
+                    ReaderManagementView()
+                        .environmentObject(squareAuthService)
+                        .environmentObject(squareReaderService)
                 default:
                     Text("Select an option from the sidebar")
                         .font(.title)
@@ -131,5 +174,7 @@ struct AdminDashboardView_Previews: PreviewProvider {
             .environmentObject(KioskStore())
             .environmentObject(DonationViewModel())
             .environmentObject(SquareAuthService())
+            .environmentObject(SquarePaymentService(authService: SquareAuthService()))
+            .environmentObject(SquareReaderService(authService: SquareAuthService()))
     }
 }

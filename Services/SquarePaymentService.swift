@@ -14,11 +14,17 @@ class SquarePaymentService: NSObject, ObservableObject, CLLocationManagerDelegat
     private var paymentHandle: PaymentHandle?
     private lazy var locationManager = CLLocationManager()
     private var centralManager: CBCentralManager?
+    private var readerService: SquareReaderService?
     
     init(authService: SquareAuthService) {
         self.authService = authService
         super.init()
         locationManager.delegate = self
+    }
+    
+    // Set the reader service - this will be called after initialization
+    func setReaderService(_ readerService: SquareReaderService) {
+        self.readerService = readerService
     }
     
     // Initialize the Square SDK
@@ -58,6 +64,9 @@ class SquarePaymentService: NSObject, ObservableObject, CLLocationManagerDelegat
 
                     self.connectionStatus = "SDK authorized"
                     print("Square Mobile Payments SDK successfully authorized.")
+                    
+                    // Update connection status
+                    self.updateConnectionStatus()
                 }
         }
     }
@@ -108,7 +117,7 @@ class SquarePaymentService: NSObject, ObservableObject, CLLocationManagerDelegat
         )
     }
     
-    // Connect to a reader
+    // Connect to a reader - updated to check the reader service first
     func connectToReader() {
         // Ensure SDK is initialized
         if MobilePaymentsSDK.shared.authorizationManager.state == .notAuthorized {
@@ -116,9 +125,66 @@ class SquarePaymentService: NSObject, ObservableObject, CLLocationManagerDelegat
             return
         }
         
-        // Update connection status
+        // Check if we have any readers via the reader service
+        if let readerService = readerService {
+            if readerService.readers.isEmpty {
+                // No readers - start pairing if not in progress
+                if !MobilePaymentsSDK.shared.readerManager.isPairingInProgress {
+                    connectionStatus = "No readers found. Starting pairing..."
+                    readerService.startPairing()
+                } else {
+                    connectionStatus = "Searching for readers..."
+                }
+                return
+            }
+            
+            // Check if we have a ready reader
+            if let readyReader = readerService.readers.first(where: { $0.state == .ready }) {
+                readerService.selectReader(readyReader)
+                connectionStatus = "Connected to \(readyReader.model == .stand ? "Square Stand" : "Square Reader")"
+                isReaderConnected = true
+                return
+            }
+            
+            // If we have readers but none are ready
+            connectionStatus = "Reader not ready. Please check reader status."
+            return
+        }
+        
+        // Fallback behavior if reader service is not available
         connectionStatus = "Ready to accept payment"
         isReaderConnected = true
+    }
+    
+    // Update connection status based on reader state
+    private func updateConnectionStatus() {
+        if let readerService = readerService {
+            if readerService.readers.isEmpty {
+                connectionStatus = "No readers connected"
+                isReaderConnected = false
+                return
+            }
+            
+            if let readyReader = readerService.readers.first(where: { $0.state == .ready }) {
+                connectionStatus = "Connected to \(readyReader.model == .stand ? "Square Stand" : "Square Reader")"
+                isReaderConnected = true
+                return
+            }
+            
+            // We have readers but none are ready
+            let firstReader = readerService.readers.first!
+            connectionStatus = "Reader \(readerService.readerStateDescription(firstReader.state))"
+            isReaderConnected = false
+        } else {
+            // Fallback if we don't have reader service
+            if MobilePaymentsSDK.shared.authorizationManager.state == .authorized {
+                connectionStatus = "SDK authorized, ready for payment"
+                isReaderConnected = true
+            } else {
+                connectionStatus = "Not connected to Square"
+                isReaderConnected = false
+            }
+        }
     }
     
     // Process a payment
@@ -152,20 +218,55 @@ class SquarePaymentService: NSObject, ObservableObject, CLLocationManagerDelegat
                 presentedVC = presented
             }
             
+            // Determine which input methods are available
+            let availableInputMethods = readerService?.availableCardInputMethods ?? MobilePaymentsSDK.shared.paymentManager.availableCardInputMethods
+            
             // Create payment parameters
             let paymentParameters = PaymentParameters(
                 idempotencyKey: UUID().uuidString,
-                amountMoney: Money(amount: amountInCents, currency: .USD), // Changed from Int64 to UInt
+                amountMoney: Money(amount: amountInCents, currency: .USD),
                 processingMode: .onlineOnly
             )
+            
+            // Determine which prompt parameters to use based on available methods
+            let promptParameters: PromptParameters
+            
+            if availableInputMethods.isEmpty {
+                // No card readers - use manual card entry
+                promptParameters = PromptParameters(
+                    mode: .default,
+                    additionalMethods: .all
+                )
+            } else if availableInputMethods == [.tap] {
+                // Only contactless is available
+                promptParameters = PromptParameters(
+                    mode: .tap,
+                    additionalMethods: .all
+                )
+            } else if availableInputMethods == [.dip] {
+                // Only chip is available
+                promptParameters = PromptParameters(
+                    mode: .dip,
+                    additionalMethods: .all
+                )
+            } else if availableInputMethods == [.swipe] {
+                // Only swipe is available
+                promptParameters = PromptParameters(
+                    mode: .swipe,
+                    additionalMethods: .all
+                )
+            } else {
+                // Multiple methods available
+                promptParameters = PromptParameters(
+                    mode: .default,
+                    additionalMethods: .all
+                )
+            }
             
             // Start the payment
             paymentHandle = MobilePaymentsSDK.shared.paymentManager.startPayment(
                 paymentParameters,
-                promptParameters: PromptParameters(
-                    mode: .default,
-                    additionalMethods: .all
-                ),
+                promptParameters: promptParameters,
                 from: presentedVC,
                 delegate: PaymentDelegate(
                     service: self,
