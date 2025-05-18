@@ -35,7 +35,10 @@ class SquareAuthService: ObservableObject {
     
     var pendingAuthState: String? {
         get { UserDefaults.standard.string(forKey: pendingAuthStateKey) }
-        set { UserDefaults.standard.set(newValue, forKey: pendingAuthStateKey) }
+        set {
+            print("Setting pendingAuthState to: \(newValue ?? "nil")")
+            UserDefaults.standard.set(newValue, forKey: pendingAuthStateKey)
+        }
     }
     
     init() {
@@ -69,6 +72,7 @@ class SquareAuthService: ObservableObject {
                     if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
                         if let connected = json["connected"] as? Bool {
                             self.isAuthenticated = connected
+                            print("Authentication status check: isAuthenticated = \(connected)")
                             
                             // If token needs refresh, trigger refresh
                             if let needsRefresh = json["needs_refresh"] as? Bool, needsRefresh {
@@ -93,13 +97,10 @@ class SquareAuthService: ObservableObject {
         isAuthenticating = true
         authError = nil
         
-        // Generate a state parameter and store it
-        let state = UUID().uuidString
-        pendingAuthState = state
+        // We'll no longer generate a state here since we'll get it from SquareConfig.generateOAuthURL
+        print("Starting OAuth flow")
         
-        print("Starting OAuth flow with state: \(state)")
-        
-        SquareConfig.generateOAuthURL { [weak self] url, error in
+        SquareConfig.generateOAuthURL { [weak self] url, error, state in
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 
@@ -116,11 +117,25 @@ class SquareAuthService: ObservableObject {
                     return
                 }
                 
+                // Set the state directly if we received it
+                if let state = state {
+                    self.pendingAuthState = state
+                    print("Starting OAuth flow with state: \(state)")
+                } else {
+                    print("WARNING: No state received from generateOAuthURL")
+                }
+                
                 print("Starting OAuth flow with URL: \(url)")
                 self.openAuthURL(url)
                 
-                // Start polling after opening the URL
-                self.startPollingForAuthStatus()
+                // Start polling after opening the URL only if we have a state
+                if self.pendingAuthState != nil {
+                    self.startPollingForAuthStatus()
+                } else {
+                    print("ERROR: Cannot start polling without pendingAuthState")
+                    self.authError = "Authorization failed: No state parameter"
+                    self.isAuthenticating = false
+                }
             }
         }
     }
@@ -239,8 +254,6 @@ class SquareAuthService: ObservableObject {
     }.resume()
 }
     
-   
-    
     // Add a method to handle the OAuth callback URL
     func handleOAuthCallback(url: URL) {
         print("Processing OAuth callback: \(url)")
@@ -274,12 +287,13 @@ class SquareAuthService: ObservableObject {
     }
 
     // Add this new method for polling
-func startPollingForAuthStatus(merchantId: String? = nil) {
+    func startPollingForAuthStatus(merchantId: String? = nil) {
         print("Starting to poll for authentication status with state: \(pendingAuthState ?? "nil")")
     
-    // Add more debug output
+        // Add more debug output
         if pendingAuthState == nil {
             print("ERROR: pendingAuthState is nil - polling will not work")
+            return // Add return to prevent invalid polling
         }
         
         // Store merchant ID if provided
@@ -287,9 +301,21 @@ func startPollingForAuthStatus(merchantId: String? = nil) {
             self.merchantId = merchantId
         }
         
+        // Make sure we're using a valid state parameter
+        let state = pendingAuthState!
+        print("Using state for polling: \(state)")
+        
         // Poll the server every 3 seconds to check authentication status
         let timer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { [weak self] timer in
-            guard let self = self, let state = self.pendingAuthState else {
+            guard let self = self else {
+                print("Self is nil, invalidating timer")
+                timer.invalidate()
+                return
+            }
+            
+            // Check again before each request
+            guard let currentState = self.pendingAuthState, currentState == state else {
+                print("State changed or was cleared, stopping polling")
                 timer.invalidate()
                 return
             }
@@ -312,10 +338,19 @@ func startPollingForAuthStatus(merchantId: String? = nil) {
                         return // continue polling
                     }
                     
+                    // Print HTTP status code for debugging
+                    if let httpResponse = response as? HTTPURLResponse {
+                        print("Polling status code: \(httpResponse.statusCode)")
+                    }
+                    
                     guard let data = data else {
                         print("No data received when polling")
                         return // continue polling
                     }
+                    
+                    // Print raw response for debugging
+                    let responseString = String(data: data, encoding: .utf8) ?? "Unable to decode response"
+                    print("Polling response: \(responseString)")
                     
                     do {
                         if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
@@ -371,177 +406,176 @@ func startPollingForAuthStatus(merchantId: String? = nil) {
         RunLoop.current.add(timer, forMode: .common)
     }
     
-    // Replace the refreshAccessToken method
     func refreshAccessToken() {
-        guard let url = URL(string: "\(SquareConfig.backendBaseURL)\(SquareConfig.refreshEndpoint)") else {
-            authError = "Invalid refresh URL"
-            return
-        }
-        
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.addValue("application/json", forHTTPHeaderField: "Content-Type")
-        
-        let body: [String: Any] = [
-            "organization_id": SquareConfig.organizationId
-        ]
-        
-        do {
-            request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        } catch {
-            authError = "Failed to serialize request: \(error.localizedDescription)"
-            return
-        }
-        
-        URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
-            DispatchQueue.main.async {
-                guard let self = self else { return }
-                
-                if let error = error {
-                    self.authError = "Network error: \(error.localizedDescription)"
-                    self.isAuthenticated = false
-                    return
-                }
-                
-                guard let data = data else {
-                    self.authError = "No data received"
-                    self.isAuthenticated = false
-                    return
-                }
-                
-                do {
-                    if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                        if let error = json["error"] as? String {
-                            self.authError = "Refresh error: \(error)"
-                            self.isAuthenticated = false
-                            return
-                        }
-                        
-                        if let success = json["success"] as? Bool, success {
-                            self.isAuthenticated = true
-                            print("Square token refreshed successfully!")
+            guard let url = URL(string: "\(SquareConfig.backendBaseURL)\(SquareConfig.refreshEndpoint)") else {
+                authError = "Invalid refresh URL"
+                return
+            }
+            
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
+            request.addValue("application/json", forHTTPHeaderField: "Content-Type")
+            
+            let body: [String: Any] = [
+                "organization_id": SquareConfig.organizationId
+            ]
+            
+            do {
+                request.httpBody = try JSONSerialization.data(withJSONObject: body)
+            } catch {
+                authError = "Failed to serialize request: \(error.localizedDescription)"
+                return
+            }
+            
+            URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+                DispatchQueue.main.async {
+                    guard let self = self else { return }
+                    
+                    if let error = error {
+                        self.authError = "Network error: \(error.localizedDescription)"
+                        self.isAuthenticated = false
+                        return
+                    }
+                    
+                    guard let data = data else {
+                        self.authError = "No data received"
+                        self.isAuthenticated = false
+                        return
+                    }
+                    
+                    do {
+                        if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                            if let error = json["error"] as? String {
+                                self.authError = "Refresh error: \(error)"
+                                self.isAuthenticated = false
+                                return
+                            }
+                            
+                            if let success = json["success"] as? Bool, success {
+                                self.isAuthenticated = true
+                                print("Square token refreshed successfully!")
+                            } else {
+                                self.isAuthenticated = false
+                            }
                         } else {
+                            self.authError = "Invalid response format"
                             self.isAuthenticated = false
                         }
-                    } else {
-                        self.authError = "Invalid response format"
+                    } catch {
+                        self.authError = "Failed to parse response: \(error.localizedDescription)"
                         self.isAuthenticated = false
                     }
-                } catch {
-                    self.authError = "Failed to parse response: \(error.localizedDescription)"
-                    self.isAuthenticated = false
                 }
-            }
-        }.resume()
-    }
+            }.resume()
+        }
     
     // Add a method to refresh the token automatically
     func refreshTokenIfNeeded() {
-        // Check if we have a refresh token and if the token is expired or about to expire
-        guard let refreshToken = refreshToken,
-              let expirationDate = tokenExpirationDate else {
-            return
+            // Check if we have a refresh token and if the token is expired or about to expire
+            guard let refreshToken = refreshToken,
+                  let expirationDate = tokenExpirationDate else {
+                return
+            }
+            
+            // Refresh if token expires in less than 7 days (as recommended by Square)
+            let sevenDaysInSeconds: TimeInterval = 7 * 24 * 60 * 60
+            if Date().addingTimeInterval(sevenDaysInSeconds) > expirationDate {
+                print("Access token will expire soon, refreshing...")
+                refreshAccessToken(refreshToken: refreshToken)
+            }
         }
-        
-        // Refresh if token expires in less than 7 days (as recommended by Square)
-        let sevenDaysInSeconds: TimeInterval = 7 * 24 * 60 * 60
-        if Date().addingTimeInterval(sevenDaysInSeconds) > expirationDate {
-            print("Access token will expire soon, refreshing...")
-            refreshAccessToken(refreshToken: refreshToken)
-        }
-    }
     
     // Add a method to handle the callback from the backend
     func handleCallbackFromBackend(success: Bool) {
-        isAuthenticating = false
-        
-        if success {
-            isAuthenticated = true
-            print("Successfully authenticated with Square via backend")
-        } else {
-            authError = "Authentication failed"
-            isAuthenticated = false
+            isAuthenticating = false
+            
+            if success {
+                isAuthenticated = true
+                print("Successfully authenticated with Square via backend")
+            } else {
+                authError = "Authentication failed"
+                isAuthenticated = false
+            }
         }
-    }
 
     // Helper method to open the auth URL
-    private func openAuthURL(_ url: URL) {
-        // Don't do anything here - we're now handling opening the URL in SquareAuthorizationView
-        print("Auth URL generated: \(url)")
-        // The actual browser will be shown by the sheet in SquareAuthorizationView
-    }
-    
-    // Helper method to refresh token with a refresh token
-    private func refreshAccessToken(refreshToken: String) {
-        guard let url = URL(string: "\(SquareConfig.backendBaseURL)\(SquareConfig.refreshEndpoint)") else {
-            authError = "Invalid refresh URL"
-            return
+        private func openAuthURL(_ url: URL) {
+            // Don't do anything here - we're now handling opening the URL in SquareAuthorizationView
+            print("Auth URL generated: \(url)")
+            // The actual browser will be shown by the sheet in SquareAuthorizationView
         }
         
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.addValue("application/json", forHTTPHeaderField: "Content-Type")
-        
-        let body: [String: Any] = [
-            "refresh_token": refreshToken,
-            "organization_id": SquareConfig.organizationId
-        ]
-        
-        do {
-            request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        } catch {
-            authError = "Failed to serialize request: \(error.localizedDescription)"
-            return
-        }
-        
-        URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
-            DispatchQueue.main.async {
-                guard let self = self else { return }
-                
-                if let error = error {
-                    self.authError = "Network error: \(error.localizedDescription)"
-                    self.isAuthenticated = false
-                    return
-                }
-                
-                guard let data = data else {
-                    self.authError = "No data received"
-                    self.isAuthenticated = false
-                    return
-                }
-                
-                do {
-                    if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                        if let error = json["error"] as? String {
-                            self.authError = "Refresh error: \(error)"
-                            self.isAuthenticated = false
-                            return
-                        }
-                        
-                        if let success = json["success"] as? Bool, success,
-                           let newAccessToken = json["access_token"] as? String,
-                           let newRefreshToken = json["refresh_token"] as? String,
-                           let newExpiresIn = json["expires_in"] as? Int {
+        // Helper method to refresh token with a refresh token
+        private func refreshAccessToken(refreshToken: String) {
+            guard let url = URL(string: "\(SquareConfig.backendBaseURL)\(SquareConfig.refreshEndpoint)") else {
+                authError = "Invalid refresh URL"
+                return
+            }
+            
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
+            request.addValue("application/json", forHTTPHeaderField: "Content-Type")
+            
+            let body: [String: Any] = [
+                "refresh_token": refreshToken,
+                "organization_id": SquareConfig.organizationId
+            ]
+            
+            do {
+                request.httpBody = try JSONSerialization.data(withJSONObject: body)
+            } catch {
+                authError = "Failed to serialize request: \(error.localizedDescription)"
+                return
+            }
+            
+            URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+                DispatchQueue.main.async {
+                    guard let self = self else { return }
+                    
+                    if let error = error {
+                        self.authError = "Network error: \(error.localizedDescription)"
+                        self.isAuthenticated = false
+                        return
+                    }
+                    
+                    guard let data = data else {
+                        self.authError = "No data received"
+                        self.isAuthenticated = false
+                        return
+                    }
+                    
+                    do {
+                        if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                            if let error = json["error"] as? String {
+                                self.authError = "Refresh error: \(error)"
+                                self.isAuthenticated = false
+                                return
+                            }
                             
-                            // Store new tokens
-                            self.accessToken = newAccessToken
-                            self.refreshToken = newRefreshToken
-                            self.tokenExpirationDate = Date().addingTimeInterval(TimeInterval(newExpiresIn))
-                            
-                            self.isAuthenticated = true
-                            print("Square token refreshed successfully!")
+                            if let success = json["success"] as? Bool, success,
+                               let newAccessToken = json["access_token"] as? String,
+                               let newRefreshToken = json["refresh_token"] as? String,
+                               let newExpiresIn = json["expires_in"] as? Int {
+                                
+                                // Store new tokens
+                                self.accessToken = newAccessToken
+                                self.refreshToken = newRefreshToken
+                                self.tokenExpirationDate = Date().addingTimeInterval(TimeInterval(newExpiresIn))
+                                
+                                self.isAuthenticated = true
+                                print("Square token refreshed successfully!")
+                            } else {
+                                self.isAuthenticated = false
+                            }
                         } else {
+                            self.authError = "Invalid response format"
                             self.isAuthenticated = false
                         }
-                    } else {
-                        self.authError = "Invalid response format"
+                    } catch {
+                        self.authError = "Failed to parse response: \(error.localizedDescription)"
                         self.isAuthenticated = false
                     }
-                } catch {
-                    self.authError = "Failed to parse response: \(error.localizedDescription)"
-                    self.isAuthenticated = false
                 }
-            }
-        }.resume()
+            }.resume()
+        }
     }
-}

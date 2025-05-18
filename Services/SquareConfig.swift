@@ -37,9 +37,9 @@ struct SquareConfig {
   ]
   
   // Generate the OAuth URL for authorization - using backend approach
-  static func generateOAuthURL(completion: @escaping (URL?, Error?) -> Void) {
+  static func generateOAuthURL(completion: @escaping (URL?, Error?, String?) -> Void) {
       guard let url = URL(string: "\(backendBaseURL)\(authorizeEndpoint)?organization_id=\(organizationId)") else {
-          completion(nil, NSError(domain: "com.charitypad", code: 1, userInfo: [NSLocalizedDescriptionKey: "Invalid backend URL"]))
+          completion(nil, NSError(domain: "com.charitypad", code: 1, userInfo: [NSLocalizedDescriptionKey: "Invalid backend URL"]), nil)
           return
       }
       
@@ -48,7 +48,7 @@ struct SquareConfig {
       URLSession.shared.dataTask(with: url) { data, response, error in
           if let error = error {
               print("Network error requesting OAuth URL: \(error.localizedDescription)")
-              completion(nil, error)
+              completion(nil, error, nil)
               return
           }
           
@@ -58,7 +58,7 @@ struct SquareConfig {
           
           guard let data = data else {
               print("No data received from backend")
-              completion(nil, NSError(domain: "com.charitypad", code: 2, userInfo: [NSLocalizedDescriptionKey: "No data received"]))
+              completion(nil, NSError(domain: "com.charitypad", code: 2, userInfo: [NSLocalizedDescriptionKey: "No data received"]), nil)
               return
           }
           
@@ -71,23 +71,26 @@ struct SquareConfig {
               if let authUrlString = json?["authUrl"] as? String, let authUrl = URL(string: authUrlString) {
                   // Store the state for CSRF protection
                   if let state = json?["state"] as? String {
-                      UserDefaults.standard.set(state, forKey: "squareOAuthState")
+                      // Use the key that matches what is used in SquareAuthService
+                      UserDefaults.standard.set(state, forKey: "squarePendingAuthState")
                       print("Stored OAuth state: \(state)")
+                      // Return the state to the caller
+                      completion(authUrl, nil, state)
+                      return
                   }
                   print("Generated OAuth URL: \(authUrl)")
-                  completion(authUrl, nil)
+                  completion(authUrl, nil, nil)
               } else if let error = json?["error"] as? String {
                   print("Backend error: \(error)")
-                  completion(nil, NSError(domain: "com.charitypad", code: 3, userInfo: [NSLocalizedDescriptionKey: error]))
+                  completion(nil, NSError(domain: "com.charitypad", code: 3, userInfo: [NSLocalizedDescriptionKey: error]), nil)
               } else {
                   print("Invalid response format")
-                  completion(nil, NSError(domain: "com.charitypad", code: 4, userInfo: [NSLocalizedDescriptionKey: "Invalid response format"]))
+                  completion(nil, NSError(domain: "com.charitypad", code: 4, userInfo: [NSLocalizedDescriptionKey: "Invalid response format"]), nil)
               }
           } catch {
               print("JSON parsing error: \(error.localizedDescription)")
-              completion(nil, error)
+              completion(nil, error, nil)
           }
       }.resume()
   }
 }
-

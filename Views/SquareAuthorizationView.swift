@@ -118,7 +118,10 @@ struct SquareAuthorizationView: View {
             print("Safari sheet dismissed, starting polling")
             // This can trigger polling if not already started
             if squareAuthService.pendingAuthState != nil {
+                print("Found pending auth state: \(squareAuthService.pendingAuthState!)")
                 squareAuthService.startPollingForAuthStatus()
+            } else {
+                print("WARNING: No pending auth state found after Safari dismissed!")
             }
         }) {
             if let url = authURL {
@@ -142,7 +145,7 @@ struct SquareAuthorizationView: View {
         print("Starting Square OAuth flow...")
         
         // Get authorization URL from your backend
-        SquareConfig.generateOAuthURL { url, error in
+        SquareConfig.generateOAuthURL { url, error, state in
             DispatchQueue.main.async {
                 if let error = error {
                     squareAuthService.authError = "Failed to generate authorization URL: \(error.localizedDescription)"
@@ -154,9 +157,17 @@ struct SquareAuthorizationView: View {
                     return
                 }
                 
-                // Store the URL and show the Safari view
+                // If we got a state back from the generateOAuthURL call, set it directly
+                if let state = state {
+                    print("Setting pendingAuthState directly to: \(state)")
+                    squareAuthService.pendingAuthState = state
+                } else {
+                    print("WARNING: No state returned from generateOAuthURL")
+                }
+                
+                // Store the URL and prepare for authentication
                 self.authURL = url
-                squareAuthService.startOAuthFlow()
+                squareAuthService.isAuthenticating = true // Set this directly instead of calling startOAuthFlow
                 
                 // Present the Safari view as a sheet
                 self.showingSafari = true
