@@ -1,4 +1,3 @@
-
 import SwiftUI
 
 struct ContentView: View {
@@ -8,6 +7,7 @@ struct ContentView: View {
     @EnvironmentObject private var organizationStore: OrganizationStore
     @EnvironmentObject private var kioskStore: KioskStore
     @EnvironmentObject private var squareAuthService: SquareAuthService
+    @EnvironmentObject private var squarePaymentService: SquarePaymentService
     
     var body: some View {
         Group {
@@ -38,6 +38,20 @@ struct ContentView: View {
             
             // Check if we're authenticated with Square
             squareAuthService.checkAuthentication()
+            
+            // Initialize the SDK if we're already authenticated
+            if squareAuthService.isAuthenticated {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                    squarePaymentService.initializeSDK()
+                }
+            }
+        }
+        // Add listener for authentication state changes
+        .onChange(of: squareAuthService.isAuthenticated) { _, isAuthenticated in
+            if isAuthenticated {
+                // Initialize the SDK when authentication state changes to authenticated
+                squarePaymentService.initializeSDK()
+            }
         }
     }
 }
@@ -49,5 +63,6 @@ struct ContentView_Previews: PreviewProvider {
             .environmentObject(OrganizationStore())
             .environmentObject(KioskStore())
             .environmentObject(SquareAuthService())
+            .environmentObject(SquarePaymentService(authService: SquareAuthService()))
     }
 }

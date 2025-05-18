@@ -6,9 +6,9 @@ class AppDelegate: NSObject, UIApplicationDelegate {
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey : Any]? = nil) -> Bool {
         // Initialize the Square Mobile Payments SDK
         // This must be done before any calls to MobilePaymentsSDK.shared
-        guard let applicationId = SquareConfig.clientID else {
-            fatalError("Square Application ID not configured")
-        }
+        
+        // Using the client ID directly since it's defined as a non-optional String in SquareConfig
+        let applicationId = SquareConfig.clientID
         
         MobilePaymentsSDK.initialize(squareApplicationID: applicationId)
         
@@ -60,4 +60,5 @@ class AppDelegate: NSObject, UIApplicationDelegate {
 // Add a notification name for the OAuth callback
 extension Notification.Name {
   static let squareOAuthCallback = Notification.Name("SquareOAuthCallback")
+  static let squareAuthenticationSuccessful = Notification.Name("SquareAuthenticationSuccessful")
 }

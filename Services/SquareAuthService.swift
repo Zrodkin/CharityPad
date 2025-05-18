@@ -313,6 +313,9 @@ class SquareAuthService: ObservableObject {
             
             print("Received successful callback with merchant ID: \(merchantId)")
             
+            // Store merchant ID immediately
+            self.merchantId = merchantId
+            
             // Start polling for authentication status
             startPollingForAuthStatus(merchantId: merchantId)
         } else if let error = queryItems.first(where: { $0.name == "error" })?.value {
@@ -329,7 +332,7 @@ class SquareAuthService: ObservableObject {
     // Add this new method for polling
     func startPollingForAuthStatus(merchantId: String? = nil) {
         print("Starting to poll for authentication status with state: \(pendingAuthState ?? "nil")")
-    
+
         // Add more debug output
         if pendingAuthState == nil {
             print("ERROR: pendingAuthState is nil - polling will not work")
@@ -416,6 +419,16 @@ class SquareAuthService: ObservableObject {
                                 self.pendingAuthState = nil
                                 self.isAuthenticated = true
                                 self.isAuthenticating = false
+                                
+                                // Post notification that authentication was successful
+                                NotificationCenter.default.post(
+                                    name: .squareAuthenticationSuccessful,
+                                    object: nil,
+                                    userInfo: [
+                                        "accessToken": accessToken,
+                                        "merchantId": merchantId
+                                    ]
+                                )
                                 
                                 print("Authentication successful! Tokens stored.")
                                 timer.invalidate()

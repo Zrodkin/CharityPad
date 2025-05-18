@@ -14,16 +14,139 @@ class SquareReaderService: NSObject, ObservableObject {
     // Private properties
     private var pairingHandle: PairingHandle? = nil
     private let authService: SquareAuthService
+    private var isInitialized = false
     
     init(authService: SquareAuthService) {
         self.authService = authService
         super.init()
+        
+        // Don't add observers in init - wait until startMonitoring is called
+        // This ensures SDK is already initialized
+        
+        // Add notification listener for authentication success
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleAuthenticationSuccess),
+            name: .squareAuthenticationSuccessful,
+            object: nil
+        )
+    }
+    
+    deinit {
+        stopMonitoring()
+        
+        // Only remove observer if we added it previously
+        if isInitialized {
+            MobilePaymentsSDK.shared.authorizationManager.remove(self)
+        }
+        
+        NotificationCenter.default.removeObserver(self)
+    }
+    
+    // MARK: - Debug Methods
+    
+    /// Prints debug information about the Square SDK
+    func debugSquareSDK() {
+        // Ensure the SDK is initialized before debugging
+        guard isInitialized else {
+            print("Cannot debug Square SDK - not yet initialized")
+            return
+        }
+        
+        print("\n--- Square SDK Debug Information ---")
+        
+        // SDK version and environment
+        print("SDK Version: \(MobilePaymentsSDK.version)")
+        print("SDK Environment: \(String(describing: MobilePaymentsSDK.shared.settingsManager.sdkSettings.environment))")
+        
+        // Authorization state
+        print("Authorization State: \(String(describing: MobilePaymentsSDK.shared.authorizationManager.state))")
+        
+        // Card Input Methods exploration
+        print("\n--- Card Input Methods ---")
+        let availableMethods = MobilePaymentsSDK.shared.paymentManager.availableCardInputMethods
+        print("Available methods: \(availableMethods)")
+        print("Type: \(type(of: availableMethods))")
+        
+        // Try to identify properties by reflection
+        print("Properties of CardInputMethods:")
+        let mirror = Mirror(reflecting: availableMethods)
+        for (label, value) in mirror.children {
+            print("- \(label ?? "unknown"): \(value)")
+        }
+        
+        // PromptParameters exploration
+        print("\n--- Prompt Parameters ---")
+        // Check what PromptMode values are available
+        print("PromptMode values:")
+        print("- default: \(String(describing: PromptMode.default))")
+        
+        // Get list of reader states
+        print("\n--- Reader States ---")
+        print("Reader State values (examples):")
+        print("- connecting: \(String(describing: ReaderState.connecting))")
+        print("- ready: \(String(describing: ReaderState.ready))")
+        print("- disconnected: \(String(describing: ReaderState.disconnected))")
+        
+        // List available readers
+        print("\n--- Available Readers ---")
+        let readers = MobilePaymentsSDK.shared.readerManager.readers
+        print("Found \(readers.count) readers")
+        
+        // If we have a reader, examine it
+        if let reader = readers.first {
+            print("\nExamining reader: \(reader.serialNumber ?? "unknown")")
+            print("Reader model: \(reader.model)")
+            print("Reader state: \(reader.state)")
+            
+            print("\nSupported card methods - will check based on SDK capability")
+            
+            if let batteryStatus = reader.batteryStatus {
+                print("\nBattery status:")
+                print("Is charging: \(batteryStatus.isCharging)")
+                print("Level: \(batteryStatus.level)")
+                print("Level type: \(type(of: batteryStatus.level))")
+            }
+        }
+        
+        // PromptParameters initialization
+        print("\n--- PromptParameters Init ---")
+        let promptParams = PromptParameters(mode: .default, additionalMethods: .all)
+        print("PromptParameters created with mode .default and additionalMethods .all")
+        
+        print("\n--- Debug Complete ---")
     }
     
     // MARK: - Public Methods
     
-    /// Start monitoring for reader updates
+    /// Check if SDK is initialized and fully ready
+    func checkIfInitialized() -> Bool {
+        // First make sure the shared instance is available
+        guard let _ = try? MobilePaymentsSDK.shared else {
+            print("Square SDK not initialized yet - shared instance not available")
+            return false
+        }
+        
+        // Mark as initialized if we get here
+        if !isInitialized {
+            isInitialized = true
+            print("Square SDK initialized and available")
+        }
+        
+        return true
+    }
+    
+    /// Start monitoring for reader updates - only call after SDK is initialized
     func startMonitoring() {
+        // Make sure the SDK is initialized before trying to monitor
+        guard checkIfInitialized() else {
+            print("Cannot start monitoring - SDK not initialized")
+            return
+        }
+        
+        // Add authorization observer if needed
+        MobilePaymentsSDK.shared.authorizationManager.add(self)
+        
         // Add this class as an observer to receive reader updates
         MobilePaymentsSDK.shared.readerManager.add(self)
         MobilePaymentsSDK.shared.paymentManager.add(self)
@@ -33,18 +156,29 @@ class SquareReaderService: NSObject, ObservableObject {
         
         // Update available card input methods
         refreshAvailableCardInputMethods()
+        
+        #if DEBUG
+        // Run debug in debug builds
+        debugSquareSDK()
+        #endif
     }
     
     /// Stop monitoring for reader updates
     func stopMonitoring() {
+        // Only try to remove if we're initialized
+        guard isInitialized else {
+            return
+        }
+        
         MobilePaymentsSDK.shared.readerManager.remove(self)
         MobilePaymentsSDK.shared.paymentManager.remove(self)
     }
     
     /// Start pairing process for Square readers
     func startPairing() {
-        // Ensure SDK is authorized first
-        guard MobilePaymentsSDK.shared.authorizationManager.state == .authorized else {
+        // Ensure SDK is initialized first
+        guard checkIfInitialized(),
+              MobilePaymentsSDK.shared.authorizationManager.state == .authorized else {
             pairingStatus = "Square SDK not authorized"
             lastPairingError = "Please authorize the Square SDK first"
             return
@@ -75,6 +209,7 @@ class SquareReaderService: NSObject, ObservableObject {
     
     /// Forget/unpair a reader
     func forgetReader(_ reader: ReaderInfo) {
+        guard checkIfInitialized() else { return }
         MobilePaymentsSDK.shared.readerManager.forget(reader)
     }
     
@@ -91,6 +226,7 @@ class SquareReaderService: NSObject, ObservableObject {
     
     /// Present the built-in Square reader settings UI
     func presentReaderSettings(from viewController: UIViewController) {
+        guard checkIfInitialized() else { return }
         MobilePaymentsSDK.shared.settingsManager.presentSettings(
             with: viewController,
             completion: { _ in
@@ -104,29 +240,17 @@ class SquareReaderService: NSObject, ObservableObject {
     
     /// Check if a reader supports a specific payment method
     func readerSupportsPaymentMethod(_ reader: ReaderInfo, method: String) -> Bool {
-        // Using a safer approach that doesn't depend on specific enum types
-        let supportedMethods = getSupportedMethodsAsStrings(reader)
-        
+        // Use a simpler string-based approach based on reader model
         switch method.lowercased() {
         case "contactless":
-            return supportedMethods.contains("contactless")
+            return reader.model == .contactlessAndChip || reader.model == .stand
         case "chip":
-            return supportedMethods.contains("chip")
+            return reader.model == .contactlessAndChip || reader.model == .stand
         case "swipe", "magstripe":
-            return supportedMethods.contains("magstripe")
+            return reader.model == .magstripe || reader.model == .contactlessAndChip || reader.model == .stand
         default:
             return false
         }
-    }
-    
-    // Helper method to extract supported methods as strings
-    private func getSupportedMethodsAsStrings(_ reader: ReaderInfo) -> [String] {
-        // This is a placeholder implementation
-        // In your actual code, you would convert the reader.supportedInputMethods
-        // to a string array using the actual SDK API
-        
-        // For now, we'll return a default set for demonstration
-        return ["contactless", "chip", "magstripe"]
     }
     
     /// Get battery level description
@@ -135,13 +259,25 @@ class SquareReaderService: NSObject, ObservableObject {
             return "N/A"
         }
         
-        // Use a hardcoded value for now since we cannot reliably extract
-        // the battery level from the ReaderBatteryLevel type
-        // In a real app, you would need to check the SDK documentation for the proper way to access this
-        let percentage = 50 // Default to 50% as placeholder
-        let chargingStatus = batteryStatus.isCharging ? " (Charging)" : ""
+        // Create a human-readable description without trying to cast
+        let levelDescription: String
         
-        return "\(percentage)%\(chargingStatus)"
+        // Depending on how the SDK represents the level
+        let levelObj = batteryStatus.level
+        if let numberLevel = levelObj as? Double {
+            // If it's a Double, format as percentage
+            let percentage = Int(numberLevel * 100)
+            levelDescription = "\(percentage)%"
+        } else if let intLevel = levelObj as? Int {
+            // If it's an Int, use directly
+            levelDescription = "\(intLevel)%"
+        } else {
+            // Otherwise just log what we have
+            levelDescription = "Available"
+        }
+        
+        let chargingStatus = batteryStatus.isCharging ? " (Charging)" : ""
+        return "\(levelDescription)\(chargingStatus)"
     }
     
     /// Get a descriptive text for reader state
@@ -157,7 +293,7 @@ class SquareReaderService: NSObject, ObservableObject {
             return "Updating Firmware..."
         case .failedToConnect:
             return "Failed to Connect"
-        default: // This handles the default case including @unknown default
+        default:
             return "Unknown State"
         }
     }
@@ -171,41 +307,44 @@ class SquareReaderService: NSObject, ObservableObject {
             return "Square Reader for magstripe"
         case .stand:
             return "Square Stand"
-        default: // This handles the default case including @unknown default
+        default:
             return "Unknown Reader Model"
         }
     }
     
     /// Get a string description of available payment methods
     func paymentMethodsDescription(_ methods: CardInputMethods) -> String {
-        var descriptions: [String] = []
+        // Use reflection to build a list of supported methods
+        let mirror = Mirror(reflecting: methods)
+        var supportedMethods: [String] = []
         
-        // Since we don't have direct access to the actual SDK enum values,
-        // we'll create a helper method to check what's supported
-        if isMethodSupported(methods, methodName: "contactless") {
-            descriptions.append("contactless")
-        }
-        if isMethodSupported(methods, methodName: "chip") {
-            descriptions.append("chip")
-        }
-        if isMethodSupported(methods, methodName: "magstripe") {
-            descriptions.append("swipe")
+        for (label, value) in mirror.children {
+            if let label = label, let boolValue = value as? Bool, boolValue {
+                supportedMethods.append(label)
+            }
         }
         
-        return descriptions.isEmpty ? "None" : descriptions.joined(separator: ", ")
-    }
-    
-    // Helper method to safely check if a method is supported
-    private func isMethodSupported(_ methods: CardInputMethods, methodName: String) -> Bool {
-        // This will be replaced with actual implementation based on SDK
-        // For now, return true so UI shows all options
-        return true
+        if supportedMethods.isEmpty {
+            return "None"
+        } else {
+            return supportedMethods.joined(separator: ", ")
+        }
     }
     
     // MARK: - Private Methods
     
+    @objc private func handleAuthenticationSuccess(_ notification: Notification) {
+        // Restart monitoring when authentication completes
+        DispatchQueue.main.async {
+            print("SquareReaderService: Authentication success notification received, starting monitoring")
+            self.startMonitoring()
+        }
+    }
+    
     /// Refresh the list of available readers
     private func refreshReaders() {
+        guard checkIfInitialized() else { return }
+        
         DispatchQueue.main.async {
             self.readers = MobilePaymentsSDK.shared.readerManager.readers
             
@@ -225,9 +364,28 @@ class SquareReaderService: NSObject, ObservableObject {
     
     /// Refresh the available card input methods
     func refreshAvailableCardInputMethods() {
+        guard checkIfInitialized() else { return }
+        
         DispatchQueue.main.async {
             self.availableCardInputMethods = MobilePaymentsSDK.shared.paymentManager.availableCardInputMethods
             self.objectWillChange.send()
+        }
+    }
+}
+
+// MARK: - AuthorizationStateObserver
+extension SquareReaderService: AuthorizationStateObserver {
+    func authorizationStateDidChange(_ authorizationState: AuthorizationState) {
+        DispatchQueue.main.async {
+            if authorizationState == .authorized {
+                print("SquareReaderService: SDK authorized, starting monitoring")
+                self.startMonitoring()
+            } else {
+                print("SquareReaderService: SDK not authorized, stopping monitoring")
+                self.stopMonitoring()
+                self.readers = []
+                self.selectedReader = nil
+            }
         }
     }
 }
