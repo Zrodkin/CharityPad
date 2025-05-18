@@ -4,7 +4,6 @@ struct AdminDashboardView: View {
     @State private var selectedTab: String? = "home"
     @State private var showingKiosk = false
     @State private var showLogoutAlert = false
-    @State private var showingSquareAuth = false
     @AppStorage("isInAdminMode") private var isInAdminMode: Bool = true
     @EnvironmentObject private var organizationStore: OrganizationStore
     @EnvironmentObject private var kioskStore: KioskStore
@@ -62,16 +61,6 @@ struct AdminDashboardView: View {
                             .font(.caption)
                             .foregroundColor(squareAuthService.isAuthenticated ? .green : .red)
                     }
-                    
-                    if !squareAuthService.isAuthenticated {
-                        Button(action: {
-                            showingSquareAuth = true
-                        }) {
-                            Text("Connect Square Account")
-                                .font(.caption)
-                                .foregroundColor(.blue)
-                        }
-                    }
                 }
                 .padding(.horizontal)
                 .padding(.vertical, 5)
@@ -91,6 +80,7 @@ struct AdminDashboardView: View {
                 }
                 .padding(.horizontal)
                 .background(Color.white.opacity(0.1))
+                .disabled(!squareAuthService.isAuthenticated)
             }
             .navigationTitle("Admin Dashboard")
         } detail: {
@@ -130,11 +120,6 @@ struct AdminDashboardView: View {
                 },
                 secondaryButton: .cancel()
             )
-        }
-        .sheet(isPresented: $showingSquareAuth, onDismiss: {
-            // Handle dismissal if needed
-        }) {
-            SquareAuthorizationView()
         }
     }
 }

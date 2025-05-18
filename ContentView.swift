@@ -1,3 +1,4 @@
+
 import SwiftUI
 
 struct ContentView: View {
@@ -6,6 +7,7 @@ struct ContentView: View {
     @EnvironmentObject private var donationViewModel: DonationViewModel
     @EnvironmentObject private var organizationStore: OrganizationStore
     @EnvironmentObject private var kioskStore: KioskStore
+    @EnvironmentObject private var squareAuthService: SquareAuthService
     
     var body: some View {
         Group {
@@ -14,15 +16,18 @@ struct ContentView: View {
                     .environmentObject(organizationStore)
                     .environmentObject(kioskStore)
                     .environmentObject(donationViewModel)
+                    .environmentObject(squareAuthService)
             } else if isInAdminMode {
                 AdminDashboardView()
                     .environmentObject(organizationStore)
                     .environmentObject(kioskStore)
                     .environmentObject(donationViewModel)
+                    .environmentObject(squareAuthService)
             } else {
                 HomeView()
                     .environmentObject(donationViewModel)
                     .environmentObject(kioskStore)
+                    .environmentObject(squareAuthService)
             }
         }
         .onAppear {
@@ -30,6 +35,9 @@ struct ContentView: View {
             if hasCompletedOnboarding {
                 isInAdminMode = true
             }
+            
+            // Check if we're authenticated with Square
+            squareAuthService.checkAuthentication()
         }
     }
 }
@@ -40,5 +48,6 @@ struct ContentView_Previews: PreviewProvider {
             .environmentObject(DonationViewModel())
             .environmentObject(OrganizationStore())
             .environmentObject(KioskStore())
+            .environmentObject(SquareAuthService())
     }
 }

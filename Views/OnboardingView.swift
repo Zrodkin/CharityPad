@@ -2,8 +2,10 @@ import SwiftUI
 
 struct OnboardingView: View {
     @State private var isLoading = false
+    @State private var showingSquareAuth = false
     @AppStorage("hasCompletedOnboarding") private var hasCompletedOnboarding: Bool = false
     @EnvironmentObject private var organizationStore: OrganizationStore
+    @EnvironmentObject private var squareAuthService: SquareAuthService
     
     var body: some View {
         ZStack {
@@ -68,13 +70,7 @@ struct OnboardingView: View {
                 
                 // Connect button
                 Button(action: {
-                    isLoading = true
-                    
-                    // Simulate connection delay
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-                        hasCompletedOnboarding = true
-                        isLoading = false
-                    }
+                    showingSquareAuth = true
                 }) {
                     HStack {
                         if isLoading {
@@ -137,6 +133,16 @@ struct OnboardingView: View {
             .padding(.horizontal, 40)
             .padding(.vertical, 60)
         }
+        .sheet(isPresented: $showingSquareAuth) {
+            // When the Square auth sheet is dismissed, check if we're authenticated
+            if squareAuthService.isAuthenticated {
+                // If successfully connected to Square, mark onboarding as complete
+                hasCompletedOnboarding = true
+            }
+        } content: {
+            SquareAuthorizationView()
+                .environmentObject(squareAuthService)
+        }
     }
 }
 
@@ -159,5 +165,6 @@ struct OnboardingView_Previews: PreviewProvider {
     static var previews: some View {
         OnboardingView()
             .environmentObject(OrganizationStore())
+            .environmentObject(SquareAuthService())
     }
 }
