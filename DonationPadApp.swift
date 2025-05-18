@@ -1,4 +1,5 @@
 import SwiftUI
+import SquareMobilePaymentsSDK
 
 @main
 struct DonationPadApp: App {

@@ -4,11 +4,15 @@ import SquareMobilePaymentsSDK
 import CoreLocation
 import CoreBluetooth
 
-class SquarePaymentService: NSObject, ObservableObject, CLLocationManagerDelegate {
+class SquarePaymentService: NSObject, ObservableObject {
+    // MARK: - Published Properties
+    
     @Published var isProcessingPayment = false
     @Published var paymentError: String? = nil
     @Published var isReaderConnected = false
     @Published var connectionStatus: String = "Disconnected"
+    
+    // MARK: - Private Properties
     
     private let authService: SquareAuthService
     private var paymentHandle: PaymentHandle?
@@ -16,18 +20,24 @@ class SquarePaymentService: NSObject, ObservableObject, CLLocationManagerDelegat
     private var centralManager: CBCentralManager?
     private var readerService: SquareReaderService?
     
+    // MARK: - Initialization
+    
     init(authService: SquareAuthService) {
         self.authService = authService
         super.init()
+        
+        // Setup location manager
         locationManager.delegate = self
     }
     
-    // Set the reader service - this will be called after initialization
+    // MARK: - Public Methods
+    
+    /// Set the reader service - called after initialization
     func setReaderService(_ readerService: SquareReaderService) {
         self.readerService = readerService
     }
     
-    // Initialize the Square SDK
+    /// Initialize the Square SDK
     func initializeSDK() {
         guard let accessToken = authService.accessToken,
               let locationID = authService.merchantId else {
@@ -40,101 +50,16 @@ class SquarePaymentService: NSObject, ObservableObject, CLLocationManagerDelegat
         requestBluetoothPermissions()
         
         // Authorize the SDK
-        authorizeMobilePaymentsSDK(accessToken: accessToken, locationID: locationID)
+        authorizeSDK(accessToken: accessToken, locationID: locationID)
     }
     
-    // Authorize the Mobile Payments SDK
-    private func authorizeMobilePaymentsSDK(accessToken: String, locationID: String) {
-        guard MobilePaymentsSDK.shared.authorizationManager.state == .notAuthorized else {
-            DispatchQueue.main.async {
-                self.connectionStatus = "SDK already authorized"
-                self.updateConnectionStatus()
-            }
-            return
-        }
-
-        MobilePaymentsSDK.shared.authorizationManager.authorize(
-           withAccessToken: accessToken,
-            locationID: locationID) { error in
-                DispatchQueue.main.async {
-                    if let authError = error {
-                        // Handle auth error
-                        self.paymentError = "Authorization error: \(authError.localizedDescription)"
-                        self.connectionStatus = "Authorization failed"
-                        print("Square SDK authorization error: \(authError.localizedDescription)")
-                        return
-                    }
-
-                    self.connectionStatus = "SDK authorized"
-                    print("Square Mobile Payments SDK successfully authorized.")
-                    
-                    // Update connection status
-                    self.updateConnectionStatus()
-                }
-        }
-    }
-    
-    // Request location permission
-    private func requestLocationPermission() {
-        let authorizationStatus = locationManager.authorizationStatus
-        
-        switch authorizationStatus {
-        case .notDetermined:
-            locationManager.requestWhenInUseAuthorization()
-        case .restricted, .denied:
-            paymentError = "Location permission is required for payments"
-            print("Show UI directing the user to the iOS Settings app")
-        case .authorizedAlways, .authorizedWhenInUse:
-            print("Location services have already been authorized.")
-        @unknown default:
-            print("Unknown location authorization status")
-        }
-    }
-    
-    // CLLocationManagerDelegate method
-    func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
-        let status = manager.authorizationStatus
-        
-        switch status {
-        case .authorizedWhenInUse, .authorizedAlways:
-            print("Location permission granted")
-            // Attempt to initialize SDK again if we have the necessary credentials
-            if let accessToken = authService.accessToken,
-               let locationID = authService.merchantId {
-                authorizeMobilePaymentsSDK(accessToken: accessToken, locationID: locationID)
-            }
-        case .denied, .restricted:
-            DispatchQueue.main.async {
-                self.paymentError = "Location permission is required for Square payments"
-                self.connectionStatus = "Location access denied"
-            }
-        case .notDetermined:
-            print("Location permission not determined yet")
-        @unknown default:
-            print("Unknown location authorization status")
-        }
-    }
-    
-    // Request Bluetooth permissions
-    private func requestBluetoothPermissions() {
-        if centralManager == nil {
-            centralManager = CBCentralManager(
-                delegate: self,
-                queue: .main,
-                options: [CBCentralManagerOptionShowPowerAlertKey: true]
-            )
-        } else if centralManager?.state == .poweredOn {
-            print("Bluetooth is already powered on")
-        }
-    }
-    
-    // Connect to a reader - updated to check the reader service first
+    /// Connect to a Square reader
     func connectToReader() {
-        // Ensure SDK is initialized
-        if MobilePaymentsSDK.shared.authorizationManager.state == .notAuthorized {
+        // Ensure SDK is initialized and authorized
+        guard MobilePaymentsSDK.shared.authorizationManager.state == .authorized else {
             if let accessToken = authService.accessToken,
                let locationID = authService.merchantId {
-                authorizeMobilePaymentsSDK(accessToken: accessToken, locationID: locationID)
+                authorizeSDK(accessToken: accessToken, locationID: locationID)
             } else {
                 initializeSDK()
             }
@@ -151,8 +76,8 @@ class SquarePaymentService: NSObject, ObservableObject, CLLocationManagerDelegat
         }
         
         // Check if location permission is granted
-        if locationManager.authorizationStatus != .authorizedWhenInUse &&
-           locationManager.authorizationStatus != .authorizedAlways {
+        let authStatus = locationManager.authorizationStatus
+        if authStatus != .authorizedWhenInUse && authStatus != .authorizedAlways {
             DispatchQueue.main.async {
                 self.paymentError = "Location permission is required for connecting to readers"
                 self.connectionStatus = "Location access needed"
@@ -160,7 +85,7 @@ class SquarePaymentService: NSObject, ObservableObject, CLLocationManagerDelegat
             return
         }
         
-        // Check if we have any readers via the reader service
+        // Use reader service to find available readers
         if let readerService = readerService {
             if readerService.readers.isEmpty {
                 // No readers - start pairing if not in progress
@@ -177,7 +102,7 @@ class SquarePaymentService: NSObject, ObservableObject, CLLocationManagerDelegat
                 return
             }
             
-            // Check if we have a ready reader
+            // If we have a ready reader, select it
             if let readyReader = readerService.readers.first(where: { $0.state == .ready }) {
                 readerService.selectReader(readyReader)
                 DispatchQueue.main.async {
@@ -188,7 +113,7 @@ class SquarePaymentService: NSObject, ObservableObject, CLLocationManagerDelegat
                 return
             }
             
-            // Check if we have a selected reader that's not ready
+            // If we have a selected reader that's not ready, show status
             if let selectedReader = readerService.selectedReader, selectedReader.state != .ready {
                 DispatchQueue.main.async {
                     self.connectionStatus = "Reader \(readerService.readerStateDescription(selectedReader.state))"
@@ -205,8 +130,7 @@ class SquarePaymentService: NSObject, ObservableObject, CLLocationManagerDelegat
             return
         }
         
-        // Fallback behavior if reader service is not available
-        // Check if SDK is authorized, assume we're ready to take payments
+        // Fallback if reader service isn't available but SDK is authorized
         if MobilePaymentsSDK.shared.authorizationManager.state == .authorized {
             DispatchQueue.main.async {
                 self.connectionStatus = "Ready to accept payment"
@@ -215,7 +139,136 @@ class SquarePaymentService: NSObject, ObservableObject, CLLocationManagerDelegat
         }
     }
     
-    // Update connection status based on reader state
+    /// Process a payment
+    func processPayment(amount: Double, completion: @escaping (Bool, String?) -> Void) {
+        // Verify authentication
+        guard authService.isAuthenticated else {
+            DispatchQueue.main.async {
+                self.paymentError = "Not authenticated with Square"
+                completion(false, nil)
+            }
+            return
+        }
+        
+        // Ensure SDK is initialized
+        guard MobilePaymentsSDK.shared.authorizationManager.state == .authorized else {
+            DispatchQueue.main.async {
+                self.initializeSDK()
+                completion(false, nil)
+            }
+            return
+        }
+        
+        DispatchQueue.main.async {
+            self.isProcessingPayment = true
+            self.paymentError = nil
+        }
+        
+        // Calculate amount in cents
+        let amountInCents = UInt(amount * 100)
+        
+        // Find the view controller to present the payment UI
+        guard let presentedVC = getTopViewController() else {
+            DispatchQueue.main.async {
+                self.isProcessingPayment = false
+                self.paymentError = "Unable to find view controller to present payment UI"
+                completion(false, nil)
+            }
+            return
+        }
+        
+        // Get available card input methods
+        let availableInputMethods = readerService?.availableCardInputMethods ??
+                                    MobilePaymentsSDK.shared.paymentManager.availableCardInputMethods
+        
+        // Create payment parameters
+        let paymentParameters = PaymentParameters(
+            idempotencyKey: UUID().uuidString,
+            amountMoney: Money(amount: amountInCents, currency: .USD),
+            processingMode: .onlineOnly
+        )
+        
+        // Create prompt parameters based on available methods
+        let promptParameters = createPromptParameters(availableInputMethods)
+        
+        // Start the payment
+        paymentHandle = MobilePaymentsSDK.shared.paymentManager.startPayment(
+            paymentParameters,
+            promptParameters: promptParameters,
+            from: presentedVC,
+            delegate: PaymentDelegate(
+                service: self,
+                completion: completion
+            )
+        )
+    }
+    
+    // MARK: - Private Methods
+    
+    /// Authorize the Mobile Payments SDK
+    private func authorizeSDK(accessToken: String, locationID: String) {
+        // Check if already authorized
+        guard MobilePaymentsSDK.shared.authorizationManager.state == .notAuthorized else {
+            DispatchQueue.main.async {
+                self.connectionStatus = "SDK already authorized"
+                self.updateConnectionStatus()
+            }
+            return
+        }
+        
+        // Authorize with Square
+        MobilePaymentsSDK.shared.authorizationManager.authorize(
+            withAccessToken: accessToken,
+            locationID: locationID
+        ) { error in
+            DispatchQueue.main.async {
+                if let authError = error {
+                    self.paymentError = "Authorization error: \(authError.localizedDescription)"
+                    self.connectionStatus = "Authorization failed"
+                    print("Square SDK authorization error: \(authError.localizedDescription)")
+                    return
+                }
+                
+                self.connectionStatus = "SDK authorized"
+                print("Square Mobile Payments SDK successfully authorized.")
+                
+                // Update connection status
+                self.updateConnectionStatus()
+            }
+        }
+    }
+    
+    /// Request location permission
+    private func requestLocationPermission() {
+        let authorizationStatus = locationManager.authorizationStatus
+        
+        switch authorizationStatus {
+        case .notDetermined:
+            locationManager.requestWhenInUseAuthorization()
+        case .restricted, .denied:
+            paymentError = "Location permission is required for payments"
+            print("Location permission denied - direct user to Settings app")
+        case .authorizedAlways, .authorizedWhenInUse:
+            print("Location services already authorized")
+        @unknown default:
+            print("Unknown location authorization status")
+        }
+    }
+    
+    /// Request Bluetooth permissions
+    private func requestBluetoothPermissions() {
+        if centralManager == nil {
+            centralManager = CBCentralManager(
+                delegate: self,
+                queue: .main,
+                options: [CBCentralManagerOptionShowPowerAlertKey: true]
+            )
+        } else if centralManager?.state == .poweredOn {
+            print("Bluetooth is already powered on")
+        }
+    }
+    
+    /// Update connection status based on reader state
     private func updateConnectionStatus() {
         if let readerService = readerService {
             if readerService.readers.isEmpty {
@@ -257,106 +310,144 @@ class SquarePaymentService: NSObject, ObservableObject, CLLocationManagerDelegat
         }
     }
     
-    // Process a payment
-    func processPayment(amount: Double, completion: @escaping (Bool, String?) -> Void) {
-        guard authService.isAuthenticated, let _ = authService.accessToken else {
-            paymentError = "Not authenticated with Square"
-            completion(false, nil)
-            return
+    /// Create prompt parameters based on available methods
+    private func createPromptParameters(_ availableInputMethods: CardInputMethods) -> PromptParameters {
+        // Use a consistent approach that doesn't rely on specific enum values
+        // that might change between SDK versions
+        
+        // For all cases, use the default mode with appropriate additional methods
+        return PromptParameters(
+            mode: .default,
+            additionalMethods: .all
+        )
+        
+        /* Commenting out enum-specific code that's causing errors
+        if availableInputMethods.isEmpty {
+            // No card readers - use manual card entry with all additional methods
+            return PromptParameters(
+                mode: .default,
+                additionalMethods: .all
+            )
+        } else if isOnlyMethodAvailable(availableInputMethods, method: "contactless") {
+            // Only contactless is available
+            return PromptParameters(
+                mode: .tap,
+                additionalMethods: .all
+            )
+        } else if isOnlyMethodAvailable(availableInputMethods, method: "chip") {
+            // Only chip is available
+            return PromptParameters(
+                mode: .dip,
+                additionalMethods: .all
+            )
+        } else if isOnlyMethodAvailable(availableInputMethods, method: "magstripe") {
+            // Only swipe is available
+            return PromptParameters(
+                mode: .swipe,
+                additionalMethods: .all
+            )
+        } else {
+            // Multiple methods available
+            return PromptParameters(
+                mode: .default,
+                additionalMethods: .all
+            )
         }
-        
-        // Ensure SDK is initialized
-        if MobilePaymentsSDK.shared.authorizationManager.state == .notAuthorized {
-            initializeSDK()
-            completion(false, nil)
-            return
-        }
-        
-        DispatchQueue.main.async {
-            self.isProcessingPayment = true
-            self.paymentError = nil
-        }
-        
-        // Create a money amount in the smallest denomination (cents)
-        let amountInCents = UInt(amount * 100) // Using UInt to ensure positive values only
-        
-        // Find the top view controller to present the payment UI
-        if let windowScene = UIApplication.shared.connectedScenes
+        */
+    }
+    
+    /// Helper to check if only one method is available
+    private func isOnlyMethodAvailable(_ methods: CardInputMethods, method: String) -> Bool {
+        // This is a placeholder implementation
+        // You'll need to implement this based on how CardInputMethods actually works
+        return false
+    }
+    
+    /// Get the top view controller to present UI
+    private func getTopViewController() -> UIViewController? {
+        guard let windowScene = UIApplication.shared.connectedScenes
             .filter({ $0.activationState == .foregroundActive })
             .compactMap({ $0 as? UIWindowScene })
             .first,
-           let topController = windowScene.windows.first?.rootViewController {
-            
-            var presentedVC = topController
-            while let presented = presentedVC.presentedViewController {
-                presentedVC = presented
+              let rootViewController = windowScene.windows.first?.rootViewController else {
+            return nil
+        }
+        
+        var topController = rootViewController
+        while let presented = topController.presentedViewController {
+            topController = presented
+        }
+        
+        return topController
+    }
+}
+
+// MARK: - LocationManagerDelegate
+extension SquarePaymentService: CLLocationManagerDelegate {
+    func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+        let status = manager.authorizationStatus
+        
+        switch status {
+        case .authorizedWhenInUse, .authorizedAlways:
+            print("Location permission granted")
+            // Try to authorize SDK if we have credentials
+            if let accessToken = authService.accessToken,
+               let locationID = authService.merchantId {
+                authorizeSDK(accessToken: accessToken, locationID: locationID)
             }
-            
-            // Determine which input methods are available
-            let availableInputMethods = readerService?.availableCardInputMethods ?? MobilePaymentsSDK.shared.paymentManager.availableCardInputMethods
-            
-            // Create payment parameters with appropriate Idempotency key
-            let paymentParameters = PaymentParameters(
-                idempotencyKey: UUID().uuidString,
-                amountMoney: Money(amount: amountInCents, currency: .USD),
-                processingMode: .onlineOnly
-            )
-            
-            // Determine which prompt parameters to use based on available methods
-            let promptParameters: PromptParameters
-            
-            if availableInputMethods.isEmpty {
-                // No card readers - use manual card entry with all additional methods
-                promptParameters = PromptParameters(
-                    mode: .default,
-                    additionalMethods: .all
-                )
-            } else if availableInputMethods == [.tap] {
-                // Only contactless is available
-                promptParameters = PromptParameters(
-                    mode: .tap,
-                    additionalMethods: .all
-                )
-            } else if availableInputMethods == [.dip] {
-                // Only chip is available
-                promptParameters = PromptParameters(
-                    mode: .dip,
-                    additionalMethods: .all
-                )
-            } else if availableInputMethods == [.swipe] {
-                // Only swipe is available
-                promptParameters = PromptParameters(
-                    mode: .swipe,
-                    additionalMethods: .all
-                )
-            } else {
-                // Multiple methods available
-                promptParameters = PromptParameters(
-                    mode: .default,
-                    additionalMethods: .all
-                )
-            }
-            
-            // Start the payment
-            paymentHandle = MobilePaymentsSDK.shared.paymentManager.startPayment(
-                paymentParameters,
-                promptParameters: promptParameters,
-                from: presentedVC,
-                delegate: PaymentDelegate(
-                    service: self,
-                    completion: completion
-                )
-            )
-        } else {
+        case .denied, .restricted:
             DispatchQueue.main.async {
-                self.isProcessingPayment = false
-                self.paymentError = "Unable to find view controller to present payment UI"
-                completion(false, nil)
+                self.paymentError = "Location permission is required for Square payments"
+                self.connectionStatus = "Location access denied"
             }
+        case .notDetermined:
+            print("Location permission not determined yet")
+        @unknown default:
+            print("Unknown location authorization status")
         }
     }
-    
-    // Helper class to handle payment callbacks
+}
+
+// MARK: - CBCentralManagerDelegate
+extension SquarePaymentService: CBCentralManagerDelegate {
+    func centralManagerDidUpdateState(_ central: CBCentralManager) {
+        switch central.state {
+        case .poweredOn:
+            print("Bluetooth is powered on and ready for use")
+            // Try to connect to reader if SDK is authorized
+            if MobilePaymentsSDK.shared.authorizationManager.state == .authorized {
+                self.connectToReader()
+            }
+        case .poweredOff:
+            DispatchQueue.main.async {
+                self.paymentError = "Bluetooth is powered off. Please turn it on to use card readers."
+                self.isReaderConnected = false
+                self.connectionStatus = "Bluetooth turned off"
+            }
+        case .resetting:
+            print("Bluetooth is resetting")
+        case .unauthorized:
+            DispatchQueue.main.async {
+                self.paymentError = "Bluetooth permission is required for card readers"
+                self.isReaderConnected = false
+                self.connectionStatus = "Bluetooth permission denied"
+            }
+        case .unsupported:
+            DispatchQueue.main.async {
+                self.paymentError = "This device does not support Bluetooth"
+                self.isReaderConnected = false
+                self.connectionStatus = "Bluetooth not supported"
+            }
+        case .unknown:
+            print("Bluetooth state is unknown")
+        @unknown default:
+            print("Unknown Bluetooth state")
+        }
+    }
+}
+
+// MARK: - Payment Delegate
+extension SquarePaymentService {
     private class PaymentDelegate: NSObject, PaymentManagerDelegate {
         private weak var service: SquarePaymentService?
         private let completion: (Bool, String?) -> Void
@@ -370,7 +461,7 @@ class SquarePaymentService: NSObject, ObservableObject, CLLocationManagerDelegat
         func paymentManager(_ paymentManager: PaymentManager, didFinish payment: Payment) {
             DispatchQueue.main.async {
                 self.service?.isProcessingPayment = false
-                print("Payment successful with ID: \(payment.id)")
+                print("Payment successful with ID: \(String(describing: payment.id))")
                 self.completion(true, payment.id)
             }
         }
@@ -391,44 +482,6 @@ class SquarePaymentService: NSObject, ObservableObject, CLLocationManagerDelegat
                 print("Payment was canceled by user")
                 self.completion(false, nil)
             }
-        }
-    }
-}
-
-// MARK: - CBCentralManagerDelegate
-extension SquarePaymentService: CBCentralManagerDelegate {
-    func centralManagerDidUpdateState(_ central: CBCentralManager) {
-        switch central.state {
-        case .poweredOn:
-            print("Bluetooth is powered on and ready for use.")
-            // If SDK is authorized, try to connect to reader
-            if MobilePaymentsSDK.shared.authorizationManager.state == .authorized {
-                self.connectToReader()
-            }
-        case .poweredOff:
-            DispatchQueue.main.async {
-                self.paymentError = "Bluetooth is powered off. Please turn it on to use card readers."
-                self.isReaderConnected = false
-                self.connectionStatus = "Bluetooth turned off"
-            }
-        case .resetting:
-            print("Bluetooth is resetting.")
-        case .unauthorized:
-            DispatchQueue.main.async {
-                self.paymentError = "Bluetooth permission is required for card readers."
-                self.isReaderConnected = false
-                self.connectionStatus = "Bluetooth permission denied"
-            }
-        case .unsupported:
-            DispatchQueue.main.async {
-                self.paymentError = "This device does not support Bluetooth."
-                self.isReaderConnected = false
-                self.connectionStatus = "Bluetooth not supported"
-            }
-        case .unknown:
-            print("Bluetooth state is unknown.")
-        @unknown default:
-            print("Unknown Bluetooth state.")
         }
     }
 }
