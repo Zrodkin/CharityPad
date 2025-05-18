@@ -80,15 +80,29 @@
         <string>com.squareup.protocol.stand</string>
     </array>
     
-    <!-- Privacy descriptions -->
+    <!-- Privacy descriptions for required permissions -->
+    <!-- Location permission - required for discovering nearby Square readers -->
     <key>NSLocationWhenInUseUsageDescription</key>
-    <string>CharityPad needs your location to connect to nearby payment readers.</string>
+    <string>CharityPad needs your location to discover and connect to nearby Square payment readers.</string>
     
+    <!-- Bluetooth permission - required for connecting to Square readers -->
     <key>NSBluetoothAlwaysUsageDescription</key>
-    <string>CharityPad uses Bluetooth to connect to payment card readers.</string>
+    <string>CharityPad uses Bluetooth to connect to Square payment card readers.</string>
     
     <key>NSBluetoothPeripheralUsageDescription</key>
-    <string>CharityPad uses Bluetooth to connect to payment card readers.</string>
+    <string>CharityPad uses Bluetooth to connect to Square payment card readers.</string>
+    
+    <!-- Microphone permission - required for some older Square readers -->
+    <key>NSMicrophoneUsageDescription</key>
+    <string>CharityPad uses the microphone to connect to some Square card readers through the headphone jack.</string>
+    
+    <!-- Near Field Communication (NFC) permission - for contactless readers -->
+    <key>NFCReaderUsageDescription</key>
+    <string>CharityPad uses NFC to accept contactless payments with Square readers.</string>
+    
+    <!-- Camera permission - might be needed for QR codes or reader setup -->
+    <key>NSCameraUsageDescription</key>
+    <string>CharityPad may use the camera to scan QR codes during Square reader setup.</string>
     
     <!-- App Transport Security Settings -->
     <key>NSAppTransportSecurity</key>
@@ -100,6 +114,13 @@
     <!-- Application requires iPhone environment -->
     <key>LSRequiresIPhoneOS</key>
     <true/>
+    
+    <!-- Background modes to maintain reader connection -->
+    <key>UIBackgroundModes</key>
+    <array>
+        <string>bluetooth-central</string>
+        <string>external-accessory</string>
+    </array>
     
     <!-- Application scene configuration -->
     <key>UIApplicationSceneManifest</key>

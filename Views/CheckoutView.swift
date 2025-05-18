@@ -3,30 +3,28 @@ import SquareMobilePaymentsSDK
 
 struct CheckoutView: View {
     let amount: Double
-    @EnvironmentObject var kioskStore: KioskStore
-    @EnvironmentObject var donationViewModel: DonationViewModel
-    @EnvironmentObject var squareAuthService: SquareAuthService
-    @EnvironmentObject var squarePaymentService: SquarePaymentService
-    @EnvironmentObject var squareReaderService: SquareReaderService
     
+    // Environment objects
+    @EnvironmentObject private var kioskStore: KioskStore
+    @EnvironmentObject private var donationViewModel: DonationViewModel
+    @EnvironmentObject private var squareAuthService: SquareAuthService
+    @EnvironmentObject private var squarePaymentService: SquarePaymentService
+    @EnvironmentObject private var squareReaderService: SquareReaderService
+    
+    // Navigation
+    @Environment(\.presentationMode) private var presentationMode
+    
+    // State
     @State private var isProcessing = false
     @State private var showingThankYou = false
     @State private var showingError = false
     @State private var errorMessage = ""
-    @State private var showingReceiptPrompt = false
-    @State private var showingEmailInput = false
-    @State private var emailAddress = ""
-    @State private var showingReceiptConfirmation = false
-    @State private var showingSquareAuth = false
     @State private var showingReaderSelection = false
-    
-    @Environment(\.presentationMode) var presentationMode
-    @Environment(\.dismiss) var dismiss
-    @State private var navigateToRoot = false
+    @State private var showingSquareAuth = false
     
     var body: some View {
         ZStack {
-            // Background image
+            // Background
             if let backgroundImage = kioskStore.backgroundImage {
                 Image(uiImage: backgroundImage)
                     .resizable()
@@ -34,310 +32,65 @@ struct CheckoutView: View {
                     .edgesIgnoringSafeArea(.all)
                     .blur(radius: 5)
             } else {
-                Image("organization-image")
-                    .resizable()
-                    .aspectRatio(contentMode: .fill)
+                Color.blue.gradient
                     .edgesIgnoringSafeArea(.all)
-                    .blur(radius: 5)
             }
             
-            // Dark overlay
-            Color.black.opacity(0.55)
+            // Content overlay
+            Color.black.opacity(0.5)
                 .edgesIgnoringSafeArea(.all)
             
+            // Main content
             VStack(spacing: 30) {
-                // "You'll pay:" text
-                Text("You'll pay:")
-                    .font(.system(size: 24))
+                // Title & Amount
+                Text("Donation Amount")
+                    .font(.largeTitle)
+                    .fontWeight(.bold)
                     .foregroundColor(.white)
                 
-                // Amount display
-                Text(donationViewModel.formatAmount(amount))
-                    .font(.system(size: 56, weight: .bold))
+                Text(formatAmount(amount))
+                    .font(.system(size: 50, weight: .bold))
                     .foregroundColor(.white)
+                    .padding(.bottom, 20)
                 
-                // Square logo
-                Image("square-logo-white")
-                    .resizable()
-                    .scaledToFit()
-                    .frame(height: 40)
-                    .padding(.top)
-
-                // Reader status information
-                VStack(spacing: 10) {
-                    // Connection status
-                    Text(squarePaymentService.connectionStatus)
-                        .font(.system(size: 16))
-                        .foregroundColor(squarePaymentService.isReaderConnected ? .green : .white.opacity(0.7))
-                    
-                    // Display available payment methods if connected
-                    if squarePaymentService.isReaderConnected, !squareReaderService.availableCardInputMethods.isEmpty {
-                        paymentMethodsView
-                    }
-                }
-                .padding(.bottom)
+                // Connection status
+                connectionStatusView
                 
-                // Square reader connection button
-                Button(action: {
-                    // If we have readers, show reader selection sheet
-                    if !squareReaderService.readers.isEmpty {
-                        showingReaderSelection = true
-                    } else {
-                        squarePaymentService.connectToReader()
-                    }
-                }) {
-                    HStack {
-                        Image(systemName: "creditcard.wireless")
-                        Text(squarePaymentService.isReaderConnected ? "Reader Connected" : "Connect Reader")
-                    }
-                    .padding()
-                    .background(squarePaymentService.isReaderConnected ? Color.green : Color.blue)
-                    .foregroundColor(.white)
-                    .cornerRadius(10)
-                }
-                .padding(.bottom, 15)
-
                 // Process payment button
                 Button(action: processPayment) {
-                    Text(isProcessing ? "Processing..." : "Process Payment")
-                        .font(.system(size: 18, weight: .medium))
-                        .foregroundColor(.white)
-                        .frame(width: 200, height: 50)
-                        .background(Color.blue.opacity(0.6))
-                        .cornerRadius(25)
+                    HStack {
+                        Image(systemName: isProcessing ? "hourglass" : "creditcard")
+                        Text(isProcessing ? "Processing..." : "Process Payment")
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding()
+                    .background(
+                        RoundedRectangle(cornerRadius: 12)
+                            .fill(Color.blue)
+                    )
+                    .foregroundColor(.white)
+                    .font(.headline)
                 }
                 .disabled(isProcessing)
-                .padding(.top, 10)
+                .padding(.horizontal)
+                
+                // Cancel button
+                Button("Cancel") {
+                    presentationMode.wrappedValue.dismiss()
+                }
+                .foregroundColor(.white)
+                .padding()
             }
             .padding()
             
-            // Thank you overlay
+            // Success overlay
             if showingThankYou {
-                Color.black.opacity(0.8)
-                    .edgesIgnoringSafeArea(.all)
-                
-                VStack(spacing: 20) {
-                    Image(systemName: "checkmark.circle")
-                        .font(.system(size: 80))
-                        .foregroundColor(.green)
-                    
-                    Text("Thank You!")
-                        .font(.system(size: 36, weight: .bold))
-                        .foregroundColor(.white)
-                    
-                    Text("Your donation has been processed.")
-                        .font(.system(size: 18))
-                        .foregroundColor(.white)
-                        .multilineTextAlignment(.center)
-                    
-                    Button(action: {
-                        // Return to home screen (all the way back to root)
-                        returnToHome()
-                    }) {
-                        Text("Done")
-                            .font(.system(size: 18, weight: .medium))
-                            .foregroundColor(.white)
-                            .frame(width: 150, height: 50)
-                            .background(Color.green)
-                            .cornerRadius(25)
-                    }
-                    .padding(.top, 20)
-                    .onAppear {
-                        // Automatically return to home after 3 seconds
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-                            returnToHome()
-                        }
-                    }
-                }
-            }
-
-            // Receipt prompt overlay
-            if showingReceiptPrompt {
-                Color.black.opacity(0.8)
-                    .edgesIgnoringSafeArea(.all)
-                
-                VStack(spacing: 20) {
-                    Image(systemName: "envelope.circle")
-                        .font(.system(size: 80))
-                        .foregroundColor(.blue)
-                    
-                    Text("Would you like a receipt?")
-                        .font(.system(size: 32, weight: .bold))
-                        .foregroundColor(.white)
-                        .multilineTextAlignment(.center)
-                    
-                    Text("We can email you a receipt for your donation.")
-                        .font(.system(size: 18))
-                        .foregroundColor(.white)
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal)
-                    
-                    HStack(spacing: 20) {
-                        Button(action: {
-                            // Skip receipt, show thank you
-                            showingReceiptPrompt = false
-                            showingThankYou = true
-                        }) {
-                            Text("No Thanks")
-                                .font(.system(size: 18, weight: .medium))
-                                .foregroundColor(.white)
-                                .frame(width: 150, height: 50)
-                                .background(Color.gray.opacity(0.6))
-                                .cornerRadius(25)
-                        }
-                        
-                        Button(action: {
-                            // Show email input
-                            showingReceiptPrompt = false
-                            showingEmailInput = true
-                        }) {
-                            Text("Yes, Please")
-                                .font(.system(size: 18, weight: .medium))
-                                .foregroundColor(.white)
-                                .frame(width: 150, height: 50)
-                                .background(Color.blue)
-                                .cornerRadius(25)
-                        }
-                    }
-                    .padding(.top, 20)
-                }
-            }
-
-            // Email input overlay
-            if showingEmailInput {
-                Color.black.opacity(0.8)
-                    .edgesIgnoringSafeArea(.all)
-                
-                VStack(spacing: 20) {
-                    Text("Enter Your Email")
-                        .font(.system(size: 32, weight: .bold))
-                        .foregroundColor(.white)
-                        .padding(.top, 40)
-                    
-                    Text("We'll send your receipt to this address")
-                        .font(.system(size: 18))
-                        .foregroundColor(.white.opacity(0.8))
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal)
-                    
-                    // Email input field
-                    TextField("email@example.com", text: $emailAddress)
-                        .font(.system(size: 20))
-                        .padding()
-                        .background(Color.white)
-                        .cornerRadius(10)
-                        .keyboardType(.emailAddress)
-                        .autocapitalization(.none)
-                        .disableAutocorrection(true)
-                        .padding(.horizontal, 30)
-                        .padding(.top, 20)
-                    
-                    HStack(spacing: 20) {
-                        Button(action: {
-                            // Go back to receipt prompt
-                            showingEmailInput = false
-                            showingReceiptPrompt = true
-                        }) {
-                            Text("Back")
-                                .font(.system(size: 18, weight: .medium))
-                                .foregroundColor(.white)
-                                .frame(width: 120, height: 50)
-                                .background(Color.gray.opacity(0.6))
-                                .cornerRadius(25)
-                        }
-                        
-                        Button(action: {
-                            // Show confirmation
-                            if !emailAddress.isEmpty {
-                                showingEmailInput = false
-                                showingReceiptConfirmation = true
-                            }
-                        }) {
-                            Text("Send Receipt")
-                                .font(.system(size: 18, weight: .medium))
-                                .foregroundColor(.white)
-                                .frame(width: 180, height: 50)
-                                .background(emailAddress.isEmpty ? Color.blue.opacity(0.4) : Color.blue)
-                                .cornerRadius(25)
-                        }
-                        .disabled(emailAddress.isEmpty)
-                    }
-                    .padding(.top, 30)
-                    
-                    Spacer()
-                }
-                .padding(.horizontal)
-            }
-
-            // Receipt confirmation overlay
-            if showingReceiptConfirmation {
-                Color.black.opacity(0.8)
-                    .edgesIgnoringSafeArea(.all)
-                
-                VStack(spacing: 20) {
-                    Image(systemName: "envelope.badge.checkmark")
-                        .font(.system(size: 80))
-                        .foregroundColor(.green)
-                    
-                    Text("Receipt Confirmation")
-                        .font(.system(size: 32, weight: .bold))
-                        .foregroundColor(.white)
-                    
-                    Text("A receipt will be sent to:\n\(emailAddress)")
-                        .font(.system(size: 18))
-                        .foregroundColor(.white)
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal)
-                    
-                    Button(action: {
-                        // Show thank you and then dismiss
-                        showingReceiptConfirmation = false
-                        showingThankYou = true
-                    }) {
-                        Text("Done")
-                            .font(.system(size: 18, weight: .medium))
-                            .foregroundColor(.white)
-                            .frame(width: 150, height: 50)
-                            .background(Color.green)
-                            .cornerRadius(25)
-                    }
-                    .padding(.top, 20)
-                }
+                thankYouOverlay
             }
             
             // Error overlay
             if showingError {
-                Color.black.opacity(0.8)
-                    .edgesIgnoringSafeArea(.all)
-                
-                VStack(spacing: 20) {
-                    Image(systemName: "exclamationmark.circle")
-                        .font(.system(size: 80))
-                        .foregroundColor(.red)
-                    
-                    Text("Payment Failed")
-                        .font(.system(size: 36, weight: .bold))
-                        .foregroundColor(.white)
-                    
-                    Text(errorMessage)
-                        .font(.system(size: 18))
-                        .foregroundColor(.white)
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal)
-                    
-                    Button(action: {
-                        // Hide error and try again
-                        showingError = false
-                    }) {
-                        Text("Try Again")
-                            .font(.system(size: 18, weight: .medium))
-                            .foregroundColor(.white)
-                            .frame(width: 150, height: 50)
-                            .background(Color.blue)
-                            .cornerRadius(25)
-                    }
-                    .padding(.top, 20)
-                }
+                errorOverlay
             }
         }
         .navigationBarBackButtonHidden(true)
@@ -350,201 +103,221 @@ struct CheckoutView: View {
                 .background(Circle().fill(Color.white.opacity(0.2)))
         })
         .onAppear {
-            // Reset the navigation flag
-            navigateToRoot = false
-            
             // Check if the reader is connected
             if !squarePaymentService.isReaderConnected {
                 squarePaymentService.connectToReader()
             }
         }
-        .onChange(of: navigateToRoot) { _, newValue in
-            if newValue {
-                // Use UIKit to pop to root
-                popToRootView()
-            }
-        }
-        .sheet(isPresented: $showingSquareAuth, onDismiss: {
-            // Handle dismissal if needed
-        }) {
+        .sheet(isPresented: $showingSquareAuth) {
             SquareAuthorizationView()
         }
         .sheet(isPresented: $showingReaderSelection) {
             ReaderSelectionSheet()
-                .environmentObject(squareReaderService)
-                .environmentObject(squarePaymentService)
         }
     }
     
-    // Payment methods display
-    private var paymentMethodsView: some View {
-        HStack(spacing: 15) {
-            if squareReaderService.availableCardInputMethods.contains(.tap) {
-                PaymentMethodView(iconName: "creditcard.wireless", label: "Tap")
+    // MARK: - Helper Views
+    
+    private var connectionStatusView: some View {
+        VStack(spacing: 12) {
+            HStack {
+                Circle()
+                    .fill(squarePaymentService.isReaderConnected ? Color.green : Color.red)
+                    .frame(width: 12, height: 12)
+                
+                Text(squarePaymentService.connectionStatus)
+                    .foregroundColor(.white)
             }
             
-            if squareReaderService.availableCardInputMethods.contains(.dip) {
-                PaymentMethodView(iconName: "creditcard.trianglebadge.exclamationmark", label: "Chip")
-            }
-            
-            if squareReaderService.availableCardInputMethods.contains(.swipe) {
-                PaymentMethodView(iconName: "creditcard", label: "Swipe")
+            if !squarePaymentService.isReaderConnected {
+                Button("Connect Reader") {
+                    if !squareReaderService.readers.isEmpty {
+                        showingReaderSelection = true
+                    } else {
+                        squarePaymentService.connectToReader()
+                    }
+                }
+                .padding(.horizontal, 20)
+                .padding(.vertical, 8)
+                .background(
+                    RoundedRectangle(cornerRadius: 20)
+                        .stroke(Color.white, lineWidth: 1)
+                )
+                .foregroundColor(.white)
             }
         }
+        .padding(.vertical)
+    }
+    
+    private var thankYouOverlay: some View {
+        ZStack {
+            Color.black.opacity(0.8)
+                .edgesIgnoringSafeArea(.all)
+            
+            VStack(spacing: 20) {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 70))
+                    .foregroundColor(.green)
+                
+                Text("Thank You!")
+                    .font(.largeTitle)
+                    .fontWeight(.bold)
+                    .foregroundColor(.white)
+                
+                Text("Your donation has been processed.")
+                    .foregroundColor(.white)
+                
+                Button("Done") {
+                    presentationMode.wrappedValue.dismiss()
+                }
+                .padding(.horizontal, 40)
+                .padding(.vertical, 10)
+                .background(Color.green)
+                .foregroundColor(.white)
+                .cornerRadius(10)
+                .padding(.top, 20)
+            }
+            .padding()
+        }
+        .onAppear {
+            // Auto dismiss after 3 seconds
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                presentationMode.wrappedValue.dismiss()
+            }
+        }
+    }
+    
+    private var errorOverlay: some View {
+        ZStack {
+            Color.black.opacity(0.8)
+                .edgesIgnoringSafeArea(.all)
+            
+            VStack(spacing: 20) {
+                Image(systemName: "exclamationmark.circle.fill")
+                    .font(.system(size: 70))
+                    .foregroundColor(.red)
+                
+                Text("Payment Failed")
+                    .font(.largeTitle)
+                    .fontWeight(.bold)
+                    .foregroundColor(.white)
+                
+                Text(errorMessage)
+                    .foregroundColor(.white)
+                    .multilineTextAlignment(.center)
+                
+                Button("Try Again") {
+                    showingError = false
+                }
+                .padding(.horizontal, 40)
+                .padding(.vertical, 10)
+                .background(Color.blue)
+                .foregroundColor(.white)
+                .cornerRadius(10)
+                .padding(.top, 20)
+            }
+            .padding()
+        }
+    }
+    
+    // MARK: - Helper Methods
+    
+    private func formatAmount(_ amount: Double) -> String {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .currency
+        formatter.currencyCode = "USD"
+        return formatter.string(from: NSNumber(value: amount)) ?? "$\(amount)"
     }
     
     private func processPayment() {
-        // Check if we're authenticated with Square
+        // Check if authenticated
         if !squareAuthService.isAuthenticated {
             showingSquareAuth = true
             return
         }
         
-        // Check if a reader is connected
+        // Check if reader connected
         if !squarePaymentService.isReaderConnected {
             squarePaymentService.connectToReader()
             return
         }
         
+        // Start processing
         isProcessing = true
         
-        // Process payment through Square
+        // Simulate payment processing for demo
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+            isProcessing = false
+            
+            // Record donation
+            donationViewModel.recordDonation(amount: amount, transactionId: UUID().uuidString)
+            
+            // Show success
+            showingThankYou = true
+        }
+        
+        // In a real app, use the Square SDK to process payment
+        /*
         squarePaymentService.processPayment(amount: amount) { success, transactionId in
             isProcessing = false
             
             if success, let transactionId = transactionId {
-                // Record the donation with the transaction ID
+                // Record donation
                 donationViewModel.recordDonation(amount: amount, transactionId: transactionId)
                 
-                // Show receipt prompt
-                showingReceiptPrompt = true
+                // Show success
+                showingThankYou = true
             } else {
                 // Show error
                 errorMessage = squarePaymentService.paymentError ?? "Payment failed"
                 showingError = true
             }
         }
-    }
-    
-    private func returnToHome() {
-        // Set the flag to trigger navigation to root
-        navigateToRoot = true
-    }
-    
-    private func popToRootView() {
-        // Get the key window using the newer API
-        let windowScene = UIApplication.shared.connectedScenes
-            .filter { $0.activationState == .foregroundActive }
-            .compactMap { $0 as? UIWindowScene }
-            .first
-        
-        let keyWindow = windowScene?.windows.first(where: { $0.isKeyWindow })
-        
-        // Find the root navigation controller
-        if let rootViewController = keyWindow?.rootViewController {
-            // Find the navigation controller
-            var currentController = rootViewController
-            while let presentedController = currentController.presentedViewController {
-                currentController = presentedController
-            }
-            
-            // If we found a navigation controller, pop to root
-            if let navigationController = findNavigationController(viewController: currentController) {
-                navigationController.popToRootViewController(animated: true)
-            }
-        }
-    }
-    
-    private func findNavigationController(viewController: UIViewController?) -> UINavigationController? {
-        guard let viewController = viewController else {
-            return nil
-        }
-        
-        if let navigationController = viewController as? UINavigationController {
-            return navigationController
-        }
-        
-        for childViewController in viewController.children {
-            if let navigationController = findNavigationController(viewController: childViewController) {
-                return navigationController
-            }
-        }
-        
-        return nil
+        */
     }
 }
 
-// Helper view for payment methods display
-struct PaymentMethodView: View {
-    let iconName: String
-    let label: String
-    
-    var body: some View {
-        VStack(spacing: 4) {
-            Image(systemName: iconName)
-                .font(.system(size: 24))
-                .foregroundColor(.white)
-            
-            Text(label)
-                .font(.caption)
-                .foregroundColor(.white)
-        }
-        .padding(.vertical, 8)
-        .padding(.horizontal, 12)
-        .background(Color.white.opacity(0.2))
-        .cornerRadius(8)
-    }
-}
-
-// Reader selection sheet
+// Simple Reader Selection Sheet
 struct ReaderSelectionSheet: View {
-    @EnvironmentObject var squareReaderService: SquareReaderService
-    @EnvironmentObject var squarePaymentService: SquarePaymentService
-    @Environment(\.dismiss) var dismiss
+    @Environment(\.presentationMode) private var presentationMode
+    @EnvironmentObject private var squareReaderService: SquareReaderService
+    @EnvironmentObject private var squarePaymentService: SquarePaymentService
     
     var body: some View {
         NavigationView {
             VStack {
                 if squareReaderService.readers.isEmpty {
-                    VStack(spacing: 16) {
+                    VStack(spacing: 20) {
                         Image(systemName: "creditcard.wireless.slash")
-                            .font(.system(size: 50))
+                            .font(.system(size: 60))
                             .foregroundColor(.gray)
-                            .padding()
                         
                         Text("No Readers Found")
-                            .font(.headline)
+                            .font(.title2)
                         
-                        Text("Connect a Square reader to process payments")
-                            .font(.subheadline)
+                        Text("Would you like to pair a new reader?")
                             .foregroundColor(.gray)
-                            .multilineTextAlignment(.center)
-                            .padding(.horizontal)
                         
                         Button("Pair New Reader") {
                             squareReaderService.startPairing()
-                            dismiss()
+                            presentationMode.wrappedValue.dismiss()
                         }
                         .padding()
                         .background(Color.blue)
                         .foregroundColor(.white)
                         .cornerRadius(10)
-                        .padding(.top)
                     }
                     .padding()
                 } else {
                     List {
                         ForEach(squareReaderService.readers, id: \.serialNumber) { reader in
                             Button(action: {
-                                // Select this reader
                                 squareReaderService.selectReader(reader)
                                 squarePaymentService.connectToReader()
-                                dismiss()
+                                presentationMode.wrappedValue.dismiss()
                             }) {
                                 HStack {
-                                    // Icon based on reader model
-                                    Image(systemName: readerIconName(reader.model))
-                                        .font(.system(size: 24))
+                                    Image(systemName: "creditcard.wireless")
                                         .foregroundColor(reader.state == .ready ? .green : .gray)
                                     
                                     VStack(alignment: .leading, spacing: 4) {
@@ -558,45 +331,19 @@ struct ReaderSelectionSheet: View {
                                     
                                     Spacer()
                                     
-                                    // Status indicator
-                                    if reader.state == .ready {
-                                        Text("Ready")
-                                            .font(.caption)
-                                            .foregroundColor(.white)
-                                            .padding(.horizontal, 8)
-                                            .padding(.vertical, 4)
-                                            .background(Color.green)
-                                            .cornerRadius(8)
-                                    } else {
-                                        Text(squareReaderService.readerStateDescription(reader.state))
-                                            .font(.caption)
-                                            .foregroundColor(.white)
-                                            .padding(.horizontal, 8)
-                                            .padding(.vertical, 4)
-                                            .background(Color.orange)
-                                            .cornerRadius(8)
-                                    }
+                                    Text(squareReaderService.readerStateDescription(reader.state))
+                                        .foregroundColor(reader.state == .ready ? .green : .orange)
+                                        .font(.caption)
                                 }
-                                .padding(.vertical, 8)
                             }
                             .disabled(reader.state != .ready)
                         }
                         
-                        // Add button to pair a new reader
-                        Section(header: Text("Add Reader")) {
-                            Button(action: {
-                                squareReaderService.startPairing()
-                                dismiss()
-                            }) {
-                                HStack {
-                                    Image(systemName: "plus.circle")
-                                        .font(.system(size: 24))
-                                    Text("Pair New Reader")
-                                }
-                                .foregroundColor(.blue)
-                                .padding(.vertical, 8)
-                            }
+                        Button("Pair New Reader") {
+                            squareReaderService.startPairing()
+                            presentationMode.wrappedValue.dismiss()
                         }
+                        .padding(.vertical, 8)
                     }
                 }
             }
@@ -605,54 +352,10 @@ struct ReaderSelectionSheet: View {
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button("Close") {
-                        dismiss()
+                        presentationMode.wrappedValue.dismiss()
                     }
                 }
             }
-        }
-    }
-    
-    private func readerIconName(_ model: ReaderModel) -> String {
-        switch model {
-        case .contactlessAndChip:
-            return "creditcard.wireless"
-        case .magstripe:
-            return "creditcard"
-        case .stand:
-            return "ipad.and.iphone"
-        @unknown default:
-            return "questionmark.circle"
-        }
-    }
-}
-    
-    private func readerModelDescription(_ model: ReaderModel) -> String {
-        switch model {
-        case .contactlessAndChip:
-            return "Square Reader for contactless and chip"
-        case .magstripe:
-            return "Square Reader for magstripe"
-        case .stand:
-            return "Square Stand"
-        @unknown default:
-            return "Unknown Reader Model"
-        }
-    }
-    
-    private func readerStateDescription(_ state: ReaderState) -> String {
-        switch state {
-        case .connecting:
-            return "Connecting"
-        case .ready:
-            return "Ready"
-        case .disconnected:
-            return "Disconnected"
-        case .updatingFirmware:
-            return "Updating"
-        case .failedToConnect:
-            return "Failed"
-        @unknown default:
-            return "Unknown"
         }
     }
 }

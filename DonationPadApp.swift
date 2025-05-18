@@ -19,11 +19,11 @@ struct DonationPadApp: App {
         // First create the auth service
         let authService = SquareAuthService()
         
-        // Then create the payment service using that auth service
-        let paymentService = SquarePaymentService(authService: authService)
-        
         // Then create the reader service using that auth service
         let readerService = SquareReaderService(authService: authService)
+        
+        // Then create the payment service using that auth service
+        let paymentService = SquarePaymentService(authService: authService)
         
         // Connect the reader service to the payment service
         paymentService.setReaderService(readerService)
@@ -45,19 +45,25 @@ struct DonationPadApp: App {
                 .environmentObject(squareReaderService)
                 .onOpenURL { url in
                     print("App received URL: \(url)")
-                    // Handle URL callbacks - commented out since we're using polling
-                    //if url.scheme == "charitypad" && url.host == "callback" {
-                    //    squareAuthService.handleOAuthCallback(url: url)
-                    //}
+                    // Let AppDelegate handle URL callbacks
                 }
                 .onAppear {
-                    // Initialize the SDK if already authenticated
+                    // Check if already authenticated and initialize the SDK
+                    squareAuthService.checkAuthentication()
+                    
                     if squareAuthService.isAuthenticated {
-                        squarePaymentService.initializeSDK()
+                        // Initialize the SDK if we're already authenticated
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                            squarePaymentService.initializeSDK()
+                        }
                     }
                     
                     // Start monitoring for Square readers
                     squareReaderService.startMonitoring()
+                }
+                .onDisappear {
+                    // Stop monitoring when app disappears
+                    squareReaderService.stopMonitoring()
                 }
         }
     }

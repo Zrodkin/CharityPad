@@ -3,46 +3,56 @@ import SquareMobilePaymentsSDK
 
 struct ReaderManagementView: View {
     @EnvironmentObject var squareAuthService: SquareAuthService
-    @StateObject var readerService: SquareReaderService
+    @EnvironmentObject var squareReaderService: SquareReaderService
     @State private var showingReaderSettings = false
-    
-    init() {
-        // We need to initialize the reader service with auth service, but since we don't have access to the environment object here,
-        // we create it with a temporary auth service and it will be updated in onAppear
-        _readerService = StateObject(wrappedValue: SquareReaderService(authService: SquareAuthService()))
-    }
+    @State private var showingPairingAlert = false
+    @State private var showingSquareAuth = false
     
     var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            // Header
-            Text("Square Reader Management")
-                .font(.title)
-                .fontWeight(.bold)
-            
-            // Authentication Status
-            authenticationStatusSection
-            
-            Divider()
-            
-            // Reader Management
-            readersSection
-            
-            Spacer()
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                // Header
+                Text("Square Reader Management")
+                    .font(.title)
+                    .fontWeight(.bold)
+                    .padding(.bottom, 5)
+                
+                // Authentication Status
+                authenticationStatusSection
+                
+                Divider()
+                
+                // Reader Management
+                readersSection
+                
+                Spacer()
+            }
+            .padding()
         }
-        .padding()
         .onAppear {
-            // Set the correct auth service when view appears
-            readerService.stopMonitoring()
-            let newReaderService = SquareReaderService(authService: squareAuthService)
-            _readerService = StateObject(wrappedValue: newReaderService)
-            readerService.startMonitoring()
+            // Start monitoring for readers when view appears
+            squareReaderService.startMonitoring()
+            
+            // Make sure Square SDK is authorized if we have valid credentials
+            if squareAuthService.isAuthenticated {
+                squareReaderService.refreshAvailableCardInputMethods()
+            }
         }
         .onDisappear {
-            readerService.stopMonitoring()
+            // Stop monitoring when view disappears to conserve resources
+            squareReaderService.stopMonitoring()
+        }
+        .sheet(isPresented: $showingSquareAuth) {
+            SquareAuthorizationView()
+        }
+        .alert("Pairing in Progress", isPresented: $showingPairingAlert) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text("Pairing is already in progress. Please wait for the current pairing to complete or cancel it.")
         }
     }
     
-    // MARK: - Authentication Status Section
+    // MARK: - View Components
     
     private var authenticationStatusSection: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -60,7 +70,7 @@ struct ReaderManagementView: View {
             
             if !squareAuthService.isAuthenticated {
                 Button("Connect to Square") {
-                    squareAuthService.startOAuthFlow()
+                    showingSquareAuth = true
                 }
                 .buttonStyle(.borderedProminent)
                 .padding(.top, 8)
@@ -69,15 +79,13 @@ struct ReaderManagementView: View {
         .padding(.vertical, 10)
     }
     
-    // MARK: - Readers Section
-    
     private var readersSection: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Card Readers")
                 .font(.headline)
             
             // Show readers list or empty state
-            if readerService.readers.isEmpty {
+            if squareReaderService.readers.isEmpty {
                 emptyReadersView
             } else {
                 readersListView
@@ -94,12 +102,13 @@ struct ReaderManagementView: View {
             }
             .buttonStyle(.bordered)
             .padding(.top, 12)
+            .disabled(!squareAuthService.isAuthenticated)
         }
         .background(
             Color(UIColor.systemBackground)
                 .fullScreenCover(isPresented: $showingReaderSettings) {
                     SquareReaderSettingsSheet()
-                        .environmentObject(readerService)
+                        .environmentObject(squareReaderService)
                 }
         )
     }
@@ -127,8 +136,9 @@ struct ReaderManagementView: View {
     
     private var readersListView: some View {
         VStack(spacing: 12) {
-            ForEach(readerService.readers, id: \.serialNumber) { reader in
-                ReaderItemView(reader: reader, readerService: readerService)
+            ForEach(squareReaderService.readers, id: \.serialNumber) { reader in
+                ReaderItemView(reader: reader)
+                    .environmentObject(squareReaderService)
             }
         }
     }
@@ -138,23 +148,23 @@ struct ReaderManagementView: View {
             Text("Reader Pairing")
                 .font(.headline)
             
-            if readerService.isPairingInProgress {
+            if squareReaderService.isPairingInProgress {
                 VStack(alignment: .leading, spacing: 8) {
                     HStack {
                         ProgressView()
                             .padding(.trailing, 6)
-                        Text(readerService.pairingStatus)
+                        Text(squareReaderService.pairingStatus)
                             .font(.subheadline)
                     }
                     
                     Button("Cancel Pairing") {
-                        readerService.stopPairing()
+                        squareReaderService.stopPairing()
                     }
                     .buttonStyle(.bordered)
                 }
             } else {
                 VStack(alignment: .leading, spacing: 8) {
-                    if let error = readerService.lastPairingError {
+                    if let error = squareReaderService.lastPairingError {
                         Text("Error: \(error)")
                             .font(.subheadline)
                             .foregroundColor(.red)
@@ -164,7 +174,17 @@ struct ReaderManagementView: View {
                     }
                     
                     Button("Pair New Reader") {
-                        readerService.startPairing()
+                        if !squareAuthService.isAuthenticated {
+                            showingSquareAuth = true
+                            return
+                        }
+                        
+                        if MobilePaymentsSDK.shared.readerManager.isPairingInProgress {
+                            showingPairingAlert = true
+                            return
+                        }
+                        
+                        squareReaderService.startPairing()
                     }
                     .buttonStyle(.borderedProminent)
                     .disabled(!squareAuthService.isAuthenticated)
@@ -177,7 +197,7 @@ struct ReaderManagementView: View {
 
 struct ReaderItemView: View {
     let reader: ReaderInfo
-    @ObservedObject var readerService: SquareReaderService
+    @EnvironmentObject var squareReaderService: SquareReaderService
     @State private var showingUnpairAlert = false
     
     var body: some View {
@@ -191,7 +211,7 @@ struct ReaderItemView: View {
                 
                 VStack(alignment: .leading, spacing: 4) {
                     // Reader model
-                    Text(readerService.readerModelDescription(reader.model))
+                    Text(squareReaderService.readerModelDescription(reader.model))
                         .font(.headline)
                     
                     // Serial number
@@ -211,7 +231,7 @@ struct ReaderItemView: View {
                 HStack {
                     batteryIcon(level: batteryStatus.level, isCharging: batteryStatus.isCharging)
                     
-                    Text(readerService.batteryLevelDescription(reader))
+                    Text(squareReaderService.batteryLevelDescription(reader))
                         .font(.caption)
                     
                     Spacer()
@@ -226,7 +246,7 @@ struct ReaderItemView: View {
                         .alert("Forget Reader", isPresented: $showingUnpairAlert) {
                             Button("Cancel", role: .cancel) { }
                             Button("Forget", role: .destructive) {
-                                readerService.forgetReader(reader)
+                                squareReaderService.forgetReader(reader)
                             }
                         } message: {
                             Text("Are you sure you want to unpair this reader? You'll need to pair it again to use it.")
@@ -252,16 +272,37 @@ struct ReaderItemView: View {
                         .background(Color.green.opacity(0.1))
                         .cornerRadius(4)
                 } else {
-                    Text(readerService.readerStateDescription(reader.state))
+                    Text(squareReaderService.readerStateDescription(reader.state))
                         .font(.caption)
                         .foregroundColor(.orange)
                 }
+            }
+            
+            // Select reader button
+            if reader.state == .ready {
+                Button(action: {
+                    squareReaderService.selectReader(reader)
+                }) {
+                    Text("Select Reader")
+                        .font(.caption)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .foregroundColor(.white)
+                        .background(Color.blue)
+                        .cornerRadius(8)
+                }
+                .padding(.top, 4)
+                .disabled(reader.state != .ready)
             }
         }
         .padding()
         .background(
             RoundedRectangle(cornerRadius: 12)
                 .fill(Color(UIColor.secondarySystemBackground))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12)
+                        .stroke(squareReaderService.selectedReader?.serialNumber == reader.serialNumber ? Color.blue : Color.clear, lineWidth: 2)
+                )
         )
     }
     
@@ -339,7 +380,7 @@ struct ReaderItemView: View {
 }
 
 struct SquareReaderSettingsSheet: View {
-    @EnvironmentObject var readerService: SquareReaderService
+    @EnvironmentObject var squareReaderService: SquareReaderService
     @Environment(\.dismiss) var dismiss
     
     var body: some View {
@@ -373,7 +414,7 @@ struct SquareReaderSettingsSheet: View {
                 
                 // Present the Square reader settings
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                    readerService.presentReaderSettings(from: currentVC)
+                    squareReaderService.presentReaderSettings(from: currentVC)
                     
                     // Dismiss our sheet after a short delay
                     DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
@@ -389,5 +430,6 @@ struct ReaderManagementView_Previews: PreviewProvider {
     static var previews: some View {
         ReaderManagementView()
             .environmentObject(SquareAuthService())
+            .environmentObject(SquareReaderService(authService: SquareAuthService()))
     }
 }

@@ -2,6 +2,8 @@ import Foundation
 import SwiftUI
 import SquareMobilePaymentsSDK
 
+// Note: Remove any custom ReaderModel or ReaderState enums since they're already defined by the SDK
+
 class SquareReaderService: NSObject, ObservableObject {
     // Published properties for UI updates
     @Published var readers: [ReaderInfo] = []
@@ -80,7 +82,13 @@ class SquareReaderService: NSObject, ObservableObject {
     
     /// Select a reader to use for payments
     func selectReader(_ reader: ReaderInfo) {
-        selectedReader = reader
+        // Only select readers that are in ready state
+        if reader.state == .ready {
+            selectedReader = reader
+            DispatchQueue.main.async {
+                self.objectWillChange.send()
+            }
+        }
     }
     
     /// Present the built-in Square reader settings UI
@@ -91,23 +99,23 @@ class SquareReaderService: NSObject, ObservableObject {
         }
     }
     
-    // MARK: - Private Methods
+    // MARK: - Helper Methods
     
-    /// Refresh the list of available readers
-    private func refreshReaders() {
-        readers = MobilePaymentsSDK.shared.readerManager.readers
-        
-        // If we have an available reader and none is selected, select the first ready one
-        if selectedReader == nil && !readers.isEmpty {
-            selectedReader = readers.first(where: { $0.state == .ready })
-        }
+    /// Check if a specific card input method is available
+    func hasCardInputMethod(_ method: CardInputMethod) -> Bool {
+        return availableCardInputMethods.contains(method)
     }
     
-    /// Refresh the available card input methods
-    private func refreshAvailableCardInputMethods() {
-        DispatchQueue.main.async {
-            self.availableCardInputMethods = MobilePaymentsSDK.shared.paymentManager.availableCardInputMethods
+    /// Get battery level description
+    func batteryLevelDescription(_ reader: ReaderInfo) -> String {
+        guard let batteryStatus = reader.batteryStatus else {
+            return "N/A"
         }
+        
+        let percentage = Int(batteryStatus.level * 100)
+        let chargingStatus = batteryStatus.isCharging ? " (Charging)" : ""
+        
+        return "\(percentage)%\(chargingStatus)"
     }
     
     /// Get a descriptive text for reader state
@@ -159,46 +167,67 @@ class SquareReaderService: NSObject, ObservableObject {
         return descriptions.isEmpty ? "None" : descriptions.joined(separator: ", ")
     }
     
-    /// Check if a specific card input method is available
-    func hasCardInputMethod(_ method: CardInputMethod) -> Bool {
-        return availableCardInputMethods.contains(method)
+    // MARK: - Private Methods
+    
+    /// Refresh the list of available readers
+    private func refreshReaders() {
+        DispatchQueue.main.async {
+            self.readers = MobilePaymentsSDK.shared.readerManager.readers
+            
+            // If we have an available reader and none is selected, select the first ready one
+            if self.selectedReader == nil && !self.readers.isEmpty {
+                self.selectedReader = self.readers.first(where: { $0.state == .ready })
+            }
+            
+            // If the currently selected reader is not ready anymore, try to find another ready reader
+            if let selectedReader = self.selectedReader, selectedReader.state != .ready {
+                self.selectedReader = self.readers.first(where: { $0.state == .ready })
+            }
+            
+            self.objectWillChange.send()
+        }
     }
     
-    /// Get battery level description
-    func batteryLevelDescription(_ reader: ReaderInfo) -> String {
-        guard let batteryStatus = reader.batteryStatus else {
-            return "N/A"
+    /// Refresh the available card input methods
+    private func refreshAvailableCardInputMethods() {
+        DispatchQueue.main.async {
+            self.availableCardInputMethods = MobilePaymentsSDK.shared.paymentManager.availableCardInputMethods
+            self.objectWillChange.send()
         }
-        
-        let percentage = Int(batteryStatus.level * 100)
-        let chargingStatus = batteryStatus.isCharging ? " (Charging)" : ""
-        
-        return "\(percentage)%\(chargingStatus)"
     }
 }
 
 // MARK: - ReaderPairingDelegate
 extension SquareReaderService: ReaderPairingDelegate {
     func readerPairingDidBegin() {
-        pairingStatus = "Searching for nearby readers..."
-        isPairingInProgress = true
-        lastPairingError = nil
+        DispatchQueue.main.async {
+            self.pairingStatus = "Searching for nearby readers..."
+            self.isPairingInProgress = true
+            self.lastPairingError = nil
+            self.objectWillChange.send()
+        }
     }
     
     func readerPairingDidSucceed() {
-        pairingStatus = "Reader paired successfully!"
-        isPairingInProgress = false
-        pairingHandle = nil
-        
-        // Refresh readers list
-        refreshReaders()
+        DispatchQueue.main.async {
+            self.pairingStatus = "Reader paired successfully!"
+            self.isPairingInProgress = false
+            self.pairingHandle = nil
+            
+            // Refresh readers list
+            self.refreshReaders()
+            self.objectWillChange.send()
+        }
     }
     
     func readerPairingDidFail(with error: Error) {
-        pairingStatus = "Pairing failed"
-        lastPairingError = error.localizedDescription
-        isPairingInProgress = false
-        pairingHandle = nil
+        DispatchQueue.main.async {
+            self.pairingStatus = "Pairing failed"
+            self.lastPairingError = error.localizedDescription
+            self.isPairingInProgress = false
+            self.pairingHandle = nil
+            self.objectWillChange.send()
+        }
     }
 }
 
@@ -209,23 +238,31 @@ extension SquareReaderService: ReaderObserver {
     }
     
     func readerWasRemoved(_ readerInfo: ReaderInfo) {
-        refreshReaders()
-        
-        // If the removed reader was selected, clear selection
-        if let selectedReader = selectedReader, selectedReader.serialNumber == readerInfo.serialNumber {
-            self.selectedReader = nil
+        DispatchQueue.main.async {
+            self.refreshReaders()
+            
+            // If the removed reader was selected, clear selection
+            if let selectedReader = self.selectedReader, selectedReader.serialNumber == readerInfo.serialNumber {
+                self.selectedReader = nil
+            }
+            
+            self.objectWillChange.send()
         }
     }
     
     func readerDidChange(_ readerInfo: ReaderInfo, change: ReaderChange) {
-        // Update readers list for any change
-        refreshReaders()
-        
-        // If the state changed for our selected reader, update available card input methods
-        if change == .stateDidChange,
-           let selectedReader = selectedReader,
-           selectedReader.serialNumber == readerInfo.serialNumber {
-            refreshAvailableCardInputMethods()
+        DispatchQueue.main.async {
+            // Update readers list for any change
+            self.refreshReaders()
+            
+            // If the state changed for our selected reader, update available card input methods
+            if change == .stateDidChange,
+               let selectedReader = self.selectedReader,
+               selectedReader.serialNumber == readerInfo.serialNumber {
+                self.refreshAvailableCardInputMethods()
+            }
+            
+            self.objectWillChange.send()
         }
     }
 }
@@ -235,6 +272,7 @@ extension SquareReaderService: AvailableCardInputMethodsObserver {
     func availableCardInputMethodsDidChange(_ cardInputMethods: CardInputMethods) {
         DispatchQueue.main.async {
             self.availableCardInputMethods = cardInputMethods
+            self.objectWillChange.send()
         }
     }
 }
