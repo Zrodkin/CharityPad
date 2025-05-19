@@ -128,8 +128,22 @@ class SquarePaymentService: NSObject, ObservableObject {
             return
         }
         
+        // NEW: Use locationId instead of merchantId
         guard let accessToken = authService.accessToken,
-              let locationID = authService.merchantId else {
+              let locationID = authService.locationId else {
+            
+            // Fallback to merchantId if locationId is not available (not recommended)
+            if let accessToken = authService.accessToken,
+               let fallbackID = authService.merchantId {
+                paymentError = "No location ID available, using merchant ID as fallback"
+                connectionStatus = "Using fallback ID"
+                print("WARNING: Using merchant ID as fallback for location ID. This might not work correctly.")
+                
+                // Continue with merchantId as fallback
+                authorizeSDK(accessToken: accessToken, locationID: fallbackID)
+                return
+            }
+            
             paymentError = "No access token or location ID available"
             connectionStatus = "Missing credentials"
             return
@@ -152,7 +166,7 @@ class SquarePaymentService: NSObject, ObservableObject {
         debugSquareSDK()
         #endif
         
-        // Authorize the SDK
+        // Authorize the SDK with locationID (not merchant ID)
         print("Authorizing Square SDK with access token and location ID: \(locationID)")
         MobilePaymentsSDK.shared.authorizationManager.authorize(
             withAccessToken: accessToken,

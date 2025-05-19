@@ -10,6 +10,7 @@ class SquareAuthService: ObservableObject {
     private let accessTokenKey = "squareAccessToken"
     private let refreshTokenKey = "squareRefreshToken"
     private let merchantIdKey = "squareMerchantId"
+    private let locationIdKey = "squareLocationId"
     private let expirationDateKey = "squareTokenExpirationDate"
     private let pendingAuthStateKey = "squarePendingAuthState"
     
@@ -27,6 +28,11 @@ class SquareAuthService: ObservableObject {
         get { UserDefaults.standard.string(forKey: merchantIdKey) }
         set { UserDefaults.standard.set(newValue, forKey: merchantIdKey) }
     }
+    
+    var locationId: String? {
+            get { UserDefaults.standard.string(forKey: locationIdKey) }
+            set { UserDefaults.standard.set(newValue, forKey: locationIdKey) }
+        }
     
     var tokenExpirationDate: Date? {
         get { UserDefaults.standard.object(forKey: expirationDateKey) as? Date }
@@ -47,90 +53,98 @@ class SquareAuthService: ObservableObject {
     }
     
     func checkAuthentication() {
-        // First check if we can use locally stored tokens
-        if let _ = accessToken,
-           let expirationDate = tokenExpirationDate,
-           expirationDate > Date() {
-            print("Found valid local token, checking with server...")
-        } else {
-            print("No valid local token found")
-        }
-        
-        // Always verify with the server, regardless of local token presence
-        guard let url = URL(string: "\(SquareConfig.backendBaseURL)\(SquareConfig.statusEndpoint)?organization_id=\(SquareConfig.organizationId)") else {
-            print("Invalid status URL")
-            isAuthenticated = false
-            return
-        }
-        
-        print("Checking authentication status with server: \(url)")
-        
-        URLSession.shared.dataTask(with: url) { [weak self] data, response, error in
-            DispatchQueue.main.async {
-                guard let self = self else { return }
-                
-                if let error = error {
-                    print("Error checking authentication: \(error)")
-                    self.isAuthenticated = false
-                    return
-                }
-                
-                // Print HTTP status code for debugging
-                if let httpResponse = response as? HTTPURLResponse {
-                    print("Status code: \(httpResponse.statusCode)")
-                }
-                
-                guard let data = data else {
-                    print("No data received")
-                    self.isAuthenticated = false
-                    return
-                }
-                
-                // Print raw response for debugging
-                let responseString = String(data: data, encoding: .utf8) ?? "Unable to decode response"
-                print("Authentication status response: \(responseString)")
-                
-                do {
-                    if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                        if let connected = json["connected"] as? Bool {
-                            self.isAuthenticated = connected
-                            print("Authentication status check: isAuthenticated = \(connected)")
-                            
-                            // If we're connected, update the merchant ID if available
-                            if connected, let merchantId = json["merchant_id"] as? String {
-                                self.merchantId = merchantId
-                                print("Updated merchant ID: \(merchantId)")
+            // First check if we can use locally stored tokens
+            if let _ = accessToken,
+               let expirationDate = tokenExpirationDate,
+               expirationDate > Date() {
+                print("Found valid local token, checking with server...")
+            } else {
+                print("No valid local token found")
+            }
+            
+            // Always verify with the server, regardless of local token presence
+            guard let url = URL(string: "\(SquareConfig.backendBaseURL)\(SquareConfig.statusEndpoint)?organization_id=\(SquareConfig.organizationId)") else {
+                print("Invalid status URL")
+                isAuthenticated = false
+                return
+            }
+            
+            print("Checking authentication status with server: \(url)")
+            
+            URLSession.shared.dataTask(with: url) { [weak self] data, response, error in
+                DispatchQueue.main.async {
+                    guard let self = self else { return }
+                    
+                    if let error = error {
+                        print("Error checking authentication: \(error)")
+                        self.isAuthenticated = false
+                        return
+                    }
+                    
+                    // Print HTTP status code for debugging
+                    if let httpResponse = response as? HTTPURLResponse {
+                        print("Status code: \(httpResponse.statusCode)")
+                    }
+                    
+                    guard let data = data else {
+                        print("No data received")
+                        self.isAuthenticated = false
+                        return
+                    }
+                    
+                    // Print raw response for debugging
+                    let responseString = String(data: data, encoding: .utf8) ?? "Unable to decode response"
+                    print("Authentication status response: \(responseString)")
+                    
+                    do {
+                        if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                            if let connected = json["connected"] as? Bool {
+                                self.isAuthenticated = connected
+                                print("Authentication status check: isAuthenticated = \(connected)")
                                 
-                                // If expires_at is available, update that too
-                                if let expiresAt = json["expires_at"] as? String {
-                                    let dateFormatter = ISO8601DateFormatter()
-                                    if let expirationDate = dateFormatter.date(from: expiresAt) {
-                                        self.tokenExpirationDate = expirationDate
-                                        print("Updated token expiration: \(expirationDate)")
+                                // If we're connected, update the merchant ID and location ID if available
+                                if connected {
+                                    if let merchantId = json["merchant_id"] as? String {
+                                        self.merchantId = merchantId
+                                        print("Updated merchant ID: \(merchantId)")
+                                    }
+                                    
+                                    // NEW: Get and store location ID
+                                    if let locationId = json["location_id"] as? String {
+                                        self.locationId = locationId
+                                        print("Updated location ID: \(locationId)")
+                                    }
+                                    
+                                    // If expires_at is available, update that too
+                                    if let expiresAt = json["expires_at"] as? String {
+                                        let dateFormatter = ISO8601DateFormatter()
+                                        if let expirationDate = dateFormatter.date(from: expiresAt) {
+                                            self.tokenExpirationDate = expirationDate
+                                            print("Updated token expiration: \(expirationDate)")
+                                        }
                                     }
                                 }
-                            }
-                            
-                            // If token needs refresh, trigger refresh
-                            if let needsRefresh = json["needs_refresh"] as? Bool, needsRefresh {
-                                print("Token needs refresh, triggering refresh flow")
-                                self.refreshAccessToken()
+                                
+                                // If token needs refresh, trigger refresh
+                                if let needsRefresh = json["needs_refresh"] as? Bool, needsRefresh {
+                                    print("Token needs refresh, triggering refresh flow")
+                                    self.refreshAccessToken()
+                                }
+                            } else {
+                                self.isAuthenticated = false
+                                print("Not connected according to server response")
                             }
                         } else {
                             self.isAuthenticated = false
-                            print("Not connected according to server response")
+                            print("Failed to parse server response as JSON")
                         }
-                    } else {
+                    } catch {
+                        print("Error parsing authentication response: \(error)")
                         self.isAuthenticated = false
-                        print("Failed to parse server response as JSON")
                     }
-                } catch {
-                    print("Error parsing authentication response: \(error)")
-                    self.isAuthenticated = false
                 }
-            }
-        }.resume()
-    }
+            }.resume()
+        }
     
     // Update the startOAuthFlow method
     func startOAuthFlow() {
@@ -182,117 +196,120 @@ class SquareAuthService: ObservableObject {
     
     // Update the checkPendingAuthorization method to use the correct URL format
     func checkPendingAuthorization(completion: @escaping (Bool) -> Void) {
-        guard isAuthenticating, !isAuthenticated, let state = pendingAuthState else {
-            completion(isAuthenticated)
-            return
-        }
-        
-        // Check with our backend if the authorization has been completed
-        guard let backendURL = URL(string: "\(SquareConfig.backendBaseURL)\(SquareConfig.statusEndpoint)?state=\(state)") else {
-            authError = "Invalid backend URL"
-            isAuthenticating = false
-            completion(false)
-            return
-        }
-        
-        print("Checking authorization status with backend: \(backendURL)")
-        
-        var request = URLRequest(url: backendURL)
-        request.httpMethod = "GET"
-        
-        URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
-            DispatchQueue.main.async {
-                guard let self = self else { return }
-                
-                if let error = error {
-                    self.authError = "Network error: \(error.localizedDescription)"
-                    print("Network error checking auth status: \(error)")
-                    completion(false)
-                    return
-                }
-                
-                // Print HTTP status code for debugging
-                if let httpResponse = response as? HTTPURLResponse {
-                    print("Backend status code: \(httpResponse.statusCode)")
-                }
-                
-                guard let data = data else {
-                    self.authError = "No data received from backend"
-                    print("No data received from backend")
-                    completion(false)
-                    return
-                }
-                
-                // Print raw response for debugging
-                let responseString = String(data: data, encoding: .utf8) ?? "Unable to decode response"
-                print("Backend response: \(responseString)")
-                
-                do {
-                    if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                        // Check if we have a valid token
-                        if let isConnected = json["connected"] as? Bool, isConnected,
-                           let accessToken = json["access_token"] as? String,
-                           let refreshToken = json["refresh_token"] as? String,
-                           let merchantId = json["merchant_id"] as? String,
-                           let expiresAt = json["expires_at"] as? String {
+            guard isAuthenticating, !isAuthenticated, let state = pendingAuthState else {
+                completion(isAuthenticated)
+                return
+            }
+            
+            // Check with our backend if the authorization has been completed
+            guard let backendURL = URL(string: "\(SquareConfig.backendBaseURL)\(SquareConfig.statusEndpoint)?state=\(state)") else {
+                authError = "Invalid backend URL"
+                isAuthenticating = false
+                completion(false)
+                return
+            }
+            
+            print("Checking authorization status with backend: \(backendURL)")
+            
+            var request = URLRequest(url: backendURL)
+            request.httpMethod = "GET"
+            
+            URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+                DispatchQueue.main.async {
+                    guard let self = self else { return }
                     
-                        // Store tokens
-                        self.accessToken = accessToken
-                        self.refreshToken = refreshToken
-                        self.merchantId = merchantId
-                    
-                        // Parse expiration date
-                        let dateFormatter = ISO8601DateFormatter()
-                        if let expirationDate = dateFormatter.date(from: expiresAt) {
-                            self.tokenExpirationDate = expirationDate
-                            print("Token expires at: \(expirationDate)")
-                        } else {
-                            // If we can't parse the date, set it to 30 days from now
-                            self.tokenExpirationDate = Date().addingTimeInterval(30 * 24 * 60 * 60)
-                            print("Could not parse expiration date, set to 30 days from now")
-                        }
-                    
-                        self.pendingAuthState = nil
-                        self.isAuthenticated = true
-                        self.isAuthenticating = false
-                    
-                        print("Square authentication successful!")
-                        completion(true)
-                        return
-                    } else if let error = json["error"] as? String {
-                        if error == "token_not_found" {
-                            // This is normal if the user hasn't completed auth yet
-                            print("Token not found yet, waiting for user to complete authorization")
-                            completion(false)
-                            return
-                        } else {
-                            self.authError = "Backend error: \(error)"
-                            self.isAuthenticating = false
-                            print("Backend error: \(error)")
-                            completion(false)
-                            return
-                        }
-                    } else if let message = json["message"] as? String, message == "token_not_found" {
-                        // This is normal if the user hasn't completed auth yet
-                        print("Token not found yet, waiting for user to complete authorization")
+                    if let error = error {
+                        self.authError = "Network error: \(error.localizedDescription)"
+                        print("Network error checking auth status: \(error)")
                         completion(false)
                         return
                     }
+                    
+                    // Print HTTP status code for debugging
+                    if let httpResponse = response as? HTTPURLResponse {
+                        print("Backend status code: \(httpResponse.statusCode)")
+                    }
+                    
+                    guard let data = data else {
+                        self.authError = "No data received from backend"
+                        print("No data received from backend")
+                        completion(false)
+                        return
+                    }
+                    
+                    // Print raw response for debugging
+                    let responseString = String(data: data, encoding: .utf8) ?? "Unable to decode response"
+                    print("Backend response: \(responseString)")
+                    
+                    do {
+                        if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                            // Check if we have a valid token
+                            if let isConnected = json["connected"] as? Bool, isConnected,
+                               let accessToken = json["access_token"] as? String,
+                               let refreshToken = json["refresh_token"] as? String,
+                               let merchantId = json["merchant_id"] as? String,
+                               let locationId = json["location_id"] as? String, // NEW: Get location ID
+                               let expiresAt = json["expires_at"] as? String {
+                        
+                                // Store tokens
+                                self.accessToken = accessToken
+                                self.refreshToken = refreshToken
+                                self.merchantId = merchantId
+                                self.locationId = locationId // NEW: Store location ID
+                        
+                                // Parse expiration date
+                                let dateFormatter = ISO8601DateFormatter()
+                                if let expirationDate = dateFormatter.date(from: expiresAt) {
+                                    self.tokenExpirationDate = expirationDate
+                                    print("Token expires at: \(expirationDate)")
+                                } else {
+                                    // If we can't parse the date, set it to 30 days from now
+                                    self.tokenExpirationDate = Date().addingTimeInterval(30 * 24 * 60 * 60)
+                                    print("Could not parse expiration date, set to 30 days from now")
+                                }
+                        
+                                self.pendingAuthState = nil
+                                self.isAuthenticated = true
+                                self.isAuthenticating = false
+                        
+                                print("Square authentication successful!")
+                                completion(true)
+                                return
+                            } else if let error = json["error"] as? String {
+                                if error == "token_not_found" {
+                                    // This is normal if the user hasn't completed auth yet
+                                    print("Token not found yet, waiting for user to complete authorization")
+                                    completion(false)
+                                    return
+                                } else {
+                                    self.authError = "Backend error: \(error)"
+                                    self.isAuthenticating = false
+                                    print("Backend error: \(error)")
+                                    completion(false)
+                                    return
+                                }
+                            } else if let message = json["message"] as? String, message == "token_not_found" {
+                                // This is normal if the user hasn't completed auth yet
+                                print("Token not found yet, waiting for user to complete authorization")
+                                completion(false)
+                                return
+                            }
+                        }
+                        
+                        // If we get here, we're still waiting for the user to complete authorization
+                        print("Still waiting for authorization to complete")
+                        completion(false)
+                        
+                    } catch {
+                        self.authError = "Failed to parse response: \(error.localizedDescription)"
+                        self.isAuthenticating = false
+                        print("JSON parsing error: \(error)")
+                        completion(false)
+                    }
                 }
-        
-                // If we get here, we're still waiting for the user to complete authorization
-                print("Still waiting for authorization to complete")
-                completion(false)
-            
-            } catch {
-                self.authError = "Failed to parse response: \(error.localizedDescription)"
-                self.isAuthenticating = false
-                print("JSON parsing error: \(error)")
-                completion(false)
-            }
+            }.resume()
         }
-    }.resume()
-}
+    
     
     // Add a method to handle the OAuth callback URL
     func handleOAuthCallback(url: URL) {
@@ -330,19 +347,24 @@ class SquareAuthService: ObservableObject {
     }
 
     // Add this new method for polling
-    func startPollingForAuthStatus(merchantId: String? = nil) {
-        print("Starting to poll for authentication status with state: \(pendingAuthState ?? "nil")")
+    func startPollingForAuthStatus(merchantId: String? = nil, locationId: String? = nil) {
+            print("Starting to poll for authentication status with state: \(pendingAuthState ?? "nil")")
 
-        // Add more debug output
-        if pendingAuthState == nil {
-            print("ERROR: pendingAuthState is nil - polling will not work")
-            return // Add return to prevent invalid polling
-        }
-        
-        // Store merchant ID if provided
-        if let merchantId = merchantId {
-            self.merchantId = merchantId
-        }
+            // Add more debug output
+            if pendingAuthState == nil {
+                print("ERROR: pendingAuthState is nil - polling will not work")
+                return // Add return to prevent invalid polling
+            }
+            
+            // Store merchant ID if provided
+            if let merchantId = merchantId {
+                self.merchantId = merchantId
+            }
+            
+            // NEW: Store location ID if provided
+            if let locationId = locationId {
+                self.locationId = locationId
+            }
         
         // Make sure we're using a valid state parameter
         let state = pendingAuthState!
