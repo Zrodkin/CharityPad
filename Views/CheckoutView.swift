@@ -15,10 +15,8 @@ struct CheckoutView: View {
     @State private var shouldDismiss = false
     
     // State
-    @State private var isProcessing = false
     @State private var showingThankYou = false
     @State private var showingError = false
-    @State private var errorMessage = ""
     @State private var showingReaderSelection = false
     @State private var showingSquareAuth = false
     
@@ -60,8 +58,8 @@ struct CheckoutView: View {
                 // Process payment button
                 Button(action: processPayment) {
                     HStack {
-                        Image(systemName: isProcessing ? "hourglass" : "creditcard")
-                        Text(isProcessing ? "Processing..." : "Process Payment")
+                        Image(systemName: squarePaymentService.isProcessingPayment ? "hourglass" : "creditcard")
+                        Text(squarePaymentService.isProcessingPayment ? "Processing..." : "Process Payment")
                     }
                     .frame(maxWidth: .infinity)
                     .padding()
@@ -72,7 +70,7 @@ struct CheckoutView: View {
                     .foregroundColor(.white)
                     .font(.headline)
                 }
-                .disabled(isProcessing)
+                .disabled(squarePaymentService.isProcessingPayment)
                 .padding(.horizontal)
                 
                 // Cancel button
@@ -107,6 +105,11 @@ struct CheckoutView: View {
             // Check if the reader is connected
             if !squarePaymentService.isReaderConnected {
                 squarePaymentService.connectToReader()
+            }
+        }
+        .onReceive(squarePaymentService.$paymentError) { error in
+            if let error = error {
+                self.showingError = true
             }
         }
         .sheet(isPresented: $showingSquareAuth) {
@@ -146,6 +149,20 @@ struct CheckoutView: View {
                 .background(
                     RoundedRectangle(cornerRadius: 20)
                         .stroke(Color.white, lineWidth: 1)
+                )
+                .foregroundColor(.white)
+            }
+            
+            // Show Tap to Pay option if supported
+            if squarePaymentService.supportsTapToPay && !squarePaymentService.isReaderConnected {
+                Button("Use Tap to Pay on iPhone") {
+                    processTapToPayPayment()
+                }
+                .padding(.horizontal, 20)
+                .padding(.vertical, 8)
+                .background(
+                    RoundedRectangle(cornerRadius: 20)
+                        .fill(Color.blue)
                 )
                 .foregroundColor(.white)
             }
@@ -206,7 +223,7 @@ struct CheckoutView: View {
                     .fontWeight(.bold)
                     .foregroundColor(.white)
                 
-                Text(errorMessage)
+                Text(squarePaymentService.paymentError ?? "Payment processing failed")
                     .foregroundColor(.white)
                     .multilineTextAlignment(.center)
                 
@@ -246,25 +263,8 @@ struct CheckoutView: View {
             return
         }
         
-        // Start processing
-        isProcessing = true
-        
-        // Simulate payment processing for demo
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-            isProcessing = false
-            
-            // Record donation
-            donationViewModel.recordDonation(amount: amount, transactionId: UUID().uuidString)
-            
-            // Show success
-            showingThankYou = true
-        }
-        
-        // In a real app, use the Square SDK to process payment
-        /*
+        // Use the actual Square payment processing
         squarePaymentService.processPayment(amount: amount) { success, transactionId in
-            isProcessing = false
-            
             if success, let transactionId = transactionId {
                 // Record donation
                 donationViewModel.recordDonation(amount: amount, transactionId: transactionId)
@@ -272,12 +272,32 @@ struct CheckoutView: View {
                 // Show success
                 showingThankYou = true
             } else {
-                // Show error
-                errorMessage = squarePaymentService.paymentError ?? "Payment failed"
+                // The error will be displayed via the paymentError binding
                 showingError = true
             }
         }
-        */
+    }
+    
+    private func processTapToPayPayment() {
+        // Check if authenticated
+        if !squareAuthService.isAuthenticated {
+            showingSquareAuth = true
+            return
+        }
+        
+        // Use Tap to Pay for processing
+        squarePaymentService.processTapToPayPayment(amount: amount) { success, transactionId in
+            if success, let transactionId = transactionId {
+                // Record donation
+                donationViewModel.recordDonation(amount: amount, transactionId: transactionId)
+                
+                // Show success
+                showingThankYou = true
+            } else {
+                // The error will be displayed via the paymentError binding
+                showingError = true
+            }
+        }
     }
 }
 
