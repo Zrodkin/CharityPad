@@ -1,10 +1,3 @@
-//
-//  SquareSDKInitializationService.swift
-//  CharityPadWSquare
-//
-//  Created by Wilkes Shluchim on 5/18/25.
-//
-
 import Foundation
 import SquareMobilePaymentsSDK
 
@@ -15,7 +8,6 @@ class SquareSDKInitializationService: NSObject, AuthorizationStateObserver {
     private weak var authService: SquareAuthService?
     private weak var paymentService: SquarePaymentService?
     private var isInitialized = false
-    private var tapToPaySettings: TapToPaySettings?
     
     // MARK: - Public Methods
     
@@ -27,21 +19,12 @@ class SquareSDKInitializationService: NSObject, AuthorizationStateObserver {
     
     /// Check if the Square SDK is initialized and ready to use
     func checkIfInitialized() -> Bool {
-        // First make sure the shared instance is available
-        guard let _ = try? MobilePaymentsSDK.shared else {
-            print("Square SDK not initialized yet - shared instance not available")
-            return false
-        }
-        
-        // Mark as initialized if we get here
         if !isInitialized {
+            // Mark as initialized
             isInitialized = true
             
             // Register as authorization observer
             MobilePaymentsSDK.shared.authorizationManager.add(self)
-            
-            // Store reference to Tap to Pay settings
-            tapToPaySettings = MobilePaymentsSDK.shared.tapToPaySettings
             
             print("Square SDK initialized and available")
         }
@@ -60,33 +43,18 @@ class SquareSDKInitializationService: NSObject, AuthorizationStateObserver {
         print("\n--- Square SDK Debug Information ---")
         
         // SDK version and environment
-        print("SDK Version: \(MobilePaymentsSDK.version)")
-        print("SDK Environment: \(String(describing: MobilePaymentsSDK.shared.settingsManager.sdkSettings.environment))")
+        print("SDK Version: \(String(describing: MobilePaymentsSDK.version))")
+        print("SDK Environment: \(MobilePaymentsSDK.shared.settingsManager.sdkSettings.environment)")
         
         // Authorization state
-        print("Authorization State: \(String(describing: MobilePaymentsSDK.shared.authorizationManager.state))")
-        
-        // Check for Tap to Pay capability
-        if let tapToPaySettings = tapToPaySettings {
-            print("Device supports Tap to Pay: \(tapToPaySettings.isDeviceCapable)")
-            
-            // Check if Apple account is linked
-            tapToPaySettings.isAppleAccountLinked { isLinked, error in
-                print("Apple account linked for Tap to Pay: \(isLinked)")
-                if let error = error {
-                    print("Error checking Apple account linking: \(error.localizedDescription)")
-                }
-            }
-        } else {
-            print("Tap to Pay settings not available")
-        }
+        print("Authorization State: \(MobilePaymentsSDK.shared.authorizationManager.state)")
         
         // Prompt parameters exploration
         print("\n--- Prompt Parameters ---")
         let promptParams = PromptParameters(mode: .default, additionalMethods: .all)
         print("Successfully created PromptParameters")
-        print("- mode: \(String(describing: promptParams.mode))")
-        print("- additionalMethods: \(String(describing: promptParams.additionalMethods))")
+        print("- mode: \(promptParams.mode)")
+        print("- additionalMethods: \(promptParams.additionalMethods)")
         
         // Payment parameters
         print("\n--- Payment Parameters ---")
@@ -98,7 +66,7 @@ class SquareSDKInitializationService: NSObject, AuthorizationStateObserver {
         print("Successfully created PaymentParameters")
         print("- idempotencyKey: \(paymentParams.idempotencyKey)")
         print("- amountMoney: \(paymentParams.amountMoney.amount) \(paymentParams.amountMoney.currency)")
-        print("- processingMode: \(String(describing: paymentParams.processingMode))")
+        print("- processingMode: \(paymentParams.processingMode)")
         
         print("\n--- Debug Complete ---")
     }
