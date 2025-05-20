@@ -37,15 +37,21 @@ class SquareReaderConnectionService: NSObject {
             return
         }
         
+        // Check if permission service is available
+        guard let permissionService = self.permissionService else {
+            updateConnectionStatus("Permission service not configured")
+            return
+        }
+        
         // Check if Bluetooth is enabled
-        guard let permissionService = permissionService, permissionService.isBluetoothAvailable() else {
+        if !permissionService.isBluetoothAvailable() {
             updatePaymentError("Bluetooth is required for connecting to readers")
             updateConnectionStatus("Bluetooth required")
             return
         }
         
         // Check if location permission is granted
-        guard let permissionService = permissionService, permissionService.isLocationPermissionGranted() else {
+        if !permissionService.isLocationPermissionGranted() {
             updatePaymentError("Location permission is required for connecting to readers")
             updateConnectionStatus("Location access needed")
             return
