@@ -22,7 +22,6 @@ class SquarePaymentService: NSObject, ObservableObject {
     @Published var supportsContactless = false
     @Published var supportsChip = false
     @Published var supportsSwipe = false
-    @Published var supportsTapToPay = false
     @Published var supportsOfflinePayments = false
     @Published var hasAvailablePaymentMethods = false
     @Published var offlinePendingCount = 0
@@ -35,7 +34,7 @@ class SquarePaymentService: NSObject, ObservableObject {
     private let paymentProcessingService: SquarePaymentProcessingService
     private let permissionService: SquarePermissionService
     private let offlinePaymentService: SquareOfflinePaymentService
-    private let tapToPayService: SquareTapToPayService
+    
     
     // MARK: - Private Properties
     
@@ -52,7 +51,7 @@ class SquarePaymentService: NSObject, ObservableObject {
         self.paymentProcessingService = SquarePaymentProcessingService()
         self.permissionService = SquarePermissionService()
         self.offlinePaymentService = SquareOfflinePaymentService()
-        self.tapToPayService = SquareTapToPayService()
+        
         
         super.init()
         
@@ -62,7 +61,7 @@ class SquarePaymentService: NSObject, ObservableObject {
         self.readerConnectionService.configure(with: self, permissionService: permissionService)
         self.paymentProcessingService.configure(with: self, authService: authService)
         self.offlinePaymentService.configure(with: self)
-        self.tapToPayService.configure(with: self, authService: authService)
+        
         
         // Register for authentication success notification
         NotificationCenter.default.addObserver(
@@ -100,7 +99,6 @@ class SquarePaymentService: NSObject, ObservableObject {
         sdkInitializationService.initializeSDK(onSuccess: {
             // After initialization succeeds, check additional states
             self.offlinePaymentService.checkOfflinePayments()
-            self.tapToPayService.checkTapToPayCapability()
             self.updateAvailablePaymentMethods()
             self.connectToReader()
         })
@@ -125,24 +123,24 @@ class SquarePaymentService: NSObject, ObservableObject {
     func updateAvailablePaymentMethods() {
         // Delegate to services to check available methods
         let cardMethods = sdkInitializationService.availableCardInputMethods()
-        let isTapToPayCapable = tapToPayService.isDeviceCapable()
+        
         
         DispatchQueue.main.async {
             // Update individual payment method flags
             self.supportsContactless = cardMethods.contains(.contactless)
             self.supportsChip = cardMethods.contains(.chip)
             self.supportsSwipe = cardMethods.contains(.swipe)
-            self.supportsTapToPay = isTapToPayCapable
+            
             
             // Set overall availability flag
-            self.hasAvailablePaymentMethods = !cardMethods.isEmpty || isTapToPayCapable
+           
             
             // Log available methods for debugging
             print("Available payment methods updated:")
             print("- Contactless: \(self.supportsContactless)")
             print("- Chip: \(self.supportsChip)")
             print("- Swipe: \(self.supportsSwipe)")
-            print("- Tap to Pay: \(self.supportsTapToPay)")
+            
         }
     }
     
@@ -151,10 +149,7 @@ class SquarePaymentService: NSObject, ObservableObject {
         paymentProcessingService.processPayment(amount: amount, allowOffline: allowOffline, supportsOfflinePayments: supportsOfflinePayments, completion: completion)
     }
     
-    /// Process a payment using Apple Tap to Pay on iPhone
-    func processTapToPayPayment(amount: Double, completion: @escaping (Bool, String?) -> Void) {
-        tapToPayService.processTapToPayPayment(amount: amount, completion: completion)
-    }
+   
     
     /// Check for pending offline payments
     func checkOfflinePayments() {

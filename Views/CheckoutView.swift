@@ -9,15 +9,13 @@ struct CheckoutView: View {
     @EnvironmentObject private var donationViewModel: DonationViewModel
     @EnvironmentObject private var squareAuthService: SquareAuthService
     @EnvironmentObject private var squarePaymentService: SquarePaymentService
-    @EnvironmentObject private var squareReaderService: SquareReaderService
     
-    // Navigation - using @State with dismiss method pattern instead of Environment
-    @State private var shouldDismiss = false
+    // Navigation via callback function
+    var onDismiss: () -> Void
     
     // State
     @State private var showingThankYou = false
     @State private var showingError = false
-    @State private var showingReaderSelection = false
     @State private var showingSquareAuth = false
     
     var body: some View {
@@ -52,7 +50,7 @@ struct CheckoutView: View {
                     .foregroundColor(.white)
                     .padding(.bottom, 20)
                 
-                // Connection status
+                // Connection status indicator - simplified for kiosk mode
                 connectionStatusView
                 
                 // Process payment button
@@ -70,12 +68,12 @@ struct CheckoutView: View {
                     .foregroundColor(.white)
                     .font(.headline)
                 }
-                .disabled(squarePaymentService.isProcessingPayment)
+                .disabled(squarePaymentService.isProcessingPayment || !squarePaymentService.isReaderConnected)
                 .padding(.horizontal)
                 
                 // Cancel button
                 Button("Cancel") {
-                    shouldDismiss = true
+                    onDismiss()
                 }
                 .foregroundColor(.white)
                 .padding()
@@ -94,7 +92,7 @@ struct CheckoutView: View {
         }
         .navigationBarBackButtonHidden(true)
         .navigationBarItems(leading: Button(action: {
-            shouldDismiss = true
+            onDismiss()
         }) {
             Image(systemName: "chevron.left")
                 .foregroundColor(.white)
@@ -102,70 +100,34 @@ struct CheckoutView: View {
                 .background(Circle().fill(Color.white.opacity(0.2)))
         })
         .onAppear {
-            // Check if the reader is connected
+            // In kiosk mode, we just check if reader is connected but don't offer pairing
             if !squarePaymentService.isReaderConnected {
                 squarePaymentService.connectToReader()
             }
         }
-        .onReceive(squarePaymentService.$paymentError) { error in
-            if let error = error {
+        .onReceive(squarePaymentService.$paymentError) { _ in
+            // Check if there's an error by accessing the published property directly
+            if squarePaymentService.paymentError != nil {
                 self.showingError = true
             }
         }
         .sheet(isPresented: $showingSquareAuth) {
             SquareAuthorizationView()
         }
-        .sheet(isPresented: $showingReaderSelection) {
-            ReaderSelectionSheet(onDismiss: {
-                showingReaderSelection = false
-            })
-        }
-        .navigate(using: $shouldDismiss, destination: EmptyView())
     }
     
     // MARK: - Helper Views
     
     private var connectionStatusView: some View {
-        VStack(spacing: 12) {
-            HStack {
-                Circle()
-                    .fill(squarePaymentService.isReaderConnected ? Color.green : Color.red)
-                    .frame(width: 12, height: 12)
-                
-                Text(squarePaymentService.connectionStatus)
-                    .foregroundColor(.white)
-            }
+        HStack {
+            Circle()
+                .fill(squarePaymentService.isReaderConnected ? Color.green : Color.red)
+                .frame(width: 12, height: 12)
             
-            if !squarePaymentService.isReaderConnected {
-                Button("Connect Reader") {
-                    if !squareReaderService.readers.isEmpty {
-                        showingReaderSelection = true
-                    } else {
-                        squarePaymentService.connectToReader()
-                    }
-                }
-                .padding(.horizontal, 20)
-                .padding(.vertical, 8)
-                .background(
-                    RoundedRectangle(cornerRadius: 20)
-                        .stroke(Color.white, lineWidth: 1)
-                )
+            Text(squarePaymentService.isReaderConnected ?
+                "Ready to process payment" :
+                "Card reader not connected. Please contact staff.")
                 .foregroundColor(.white)
-            }
-            
-            // Show Tap to Pay option if supported
-            if squarePaymentService.supportsTapToPay && !squarePaymentService.isReaderConnected {
-                Button("Use Tap to Pay on iPhone") {
-                    processTapToPayPayment()
-                }
-                .padding(.horizontal, 20)
-                .padding(.vertical, 8)
-                .background(
-                    RoundedRectangle(cornerRadius: 20)
-                        .fill(Color.blue)
-                )
-                .foregroundColor(.white)
-            }
         }
         .padding(.vertical)
     }
@@ -189,7 +151,7 @@ struct CheckoutView: View {
                     .foregroundColor(.white)
                 
                 Button("Done") {
-                    shouldDismiss = true
+                    onDismiss()
                 }
                 .padding(.horizontal, 40)
                 .padding(.vertical, 10)
@@ -203,7 +165,7 @@ struct CheckoutView: View {
         .onAppear {
             // Auto dismiss after 3 seconds
             DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
-                shouldDismiss = true
+                onDismiss()
             }
         }
     }
@@ -259,7 +221,9 @@ struct CheckoutView: View {
         
         // Check if reader connected
         if !squarePaymentService.isReaderConnected {
-            squarePaymentService.connectToReader()
+            // In kiosk mode, just show an error - no pairing functionality
+            squarePaymentService.paymentError = "Card reader not connected. Please contact staff."
+            showingError = true
             return
         }
         
@@ -276,129 +240,5 @@ struct CheckoutView: View {
                 showingError = true
             }
         }
-    }
-    
-    private func processTapToPayPayment() {
-        // Check if authenticated
-        if !squareAuthService.isAuthenticated {
-            showingSquareAuth = true
-            return
-        }
-        
-        // Use Tap to Pay for processing
-        squarePaymentService.processTapToPayPayment(amount: amount) { success, transactionId in
-            if success, let transactionId = transactionId {
-                // Record donation
-                donationViewModel.recordDonation(amount: amount, transactionId: transactionId)
-                
-                // Show success
-                showingThankYou = true
-            } else {
-                // The error will be displayed via the paymentError binding
-                showingError = true
-            }
-        }
-    }
-}
-
-// Simple Reader Selection Sheet
-struct ReaderSelectionSheet: View {
-    @EnvironmentObject private var squareReaderService: SquareReaderService
-    @EnvironmentObject private var squarePaymentService: SquarePaymentService
-    
-    // Using closure for dismissal instead of Environment
-    var onDismiss: () -> Void
-    
-    var body: some View {
-        NavigationView {
-            VStack {
-                if squareReaderService.readers.isEmpty {
-                    VStack(spacing: 20) {
-                        Image(systemName: "creditcard.wireless.slash")
-                            .font(.system(size: 60))
-                            .foregroundColor(.gray)
-                        
-                        Text("No Readers Found")
-                            .font(.title2)
-                        
-                        Text("Would you like to pair a new reader?")
-                            .foregroundColor(.gray)
-                        
-                        Button("Pair New Reader") {
-                            squareReaderService.startPairing()
-                            onDismiss()
-                        }
-                        .padding()
-                        .background(Color.blue)
-                        .foregroundColor(.white)
-                        .cornerRadius(10)
-                    }
-                    .padding()
-                } else {
-                    List {
-                        ForEach(squareReaderService.readers, id: \.serialNumber) { reader in
-                            Button(action: {
-                                squareReaderService.selectReader(reader)
-                                squarePaymentService.connectToReader()
-                                onDismiss()
-                            }) {
-                                HStack {
-                                    Image(systemName: "creditcard.wireless")
-                                        .foregroundColor(reader.state == .ready ? .green : .gray)
-                                    
-                                    VStack(alignment: .leading, spacing: 4) {
-                                        Text(squareReaderService.readerModelDescription(reader.model))
-                                            .font(.headline)
-                                        
-                                        Text("S/N: \(String(describing: reader.serialNumber))")
-                                            .font(.caption)
-                                            .foregroundColor(.gray)
-                                    }
-                                    
-                                    Spacer()
-                                    
-                                    Text(squareReaderService.readerStateDescription(reader.state))
-                                        .foregroundColor(reader.state == .ready ? .green : .orange)
-                                        .font(.caption)
-                                }
-                            }
-                            .disabled(reader.state != .ready)
-                        }
-                        
-                        Button("Pair New Reader") {
-                            squareReaderService.startPairing()
-                            onDismiss()
-                        }
-                        .padding(.vertical, 8)
-                    }
-                }
-            }
-            .navigationTitle("Select Reader")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("Close") {
-                        onDismiss()
-                    }
-                }
-            }
-        }
-    }
-}
-
-// Extension for navigation without using Environment
-extension View {
-    func navigate<Destination: View>(using binding: Binding<Bool>, destination: Destination) -> some View {
-        // Only support iOS 18+
-        overlay(
-            ZStack {
-                // Empty implementation since we're only targeting iOS 18+
-                // In a real implementation, you would use the most current navigation API
-                if binding.wrappedValue {
-                    destination
-                        .hidden()
-                }
-            }
-        )
     }
 }

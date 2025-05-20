@@ -81,7 +81,14 @@ struct DonationSelectionView: View {
         }
         // Navigation destination for Checkout
         .navigationDestination(isPresented: $navigateToCheckout) {
-            CheckoutView(amount: donationViewModel.selectedAmount ?? 0)
+            CheckoutView(
+                amount: donationViewModel.selectedAmount ?? 0,
+                onDismiss: {
+                    // When CheckoutView is dismissed, set navigateToCheckout to false
+                    // to return to this view
+                    navigateToCheckout = false
+                }
+            )
         }
     }
 }

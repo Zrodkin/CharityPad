@@ -151,7 +151,14 @@ struct CustomAmountView: View {
             }
         }
         .navigationDestination(isPresented: $navigateToCheckout) {
-            CheckoutView(amount: Double(donationViewModel.customAmount) ?? 0)
+            CheckoutView(
+                amount: Double(donationViewModel.customAmount) ?? 0,
+                onDismiss: {
+                    // When CheckoutView is dismissed, set navigateToCheckout to false
+                    // to return to this view
+                    navigateToCheckout = false
+                }
+            )
         }
     }
     
