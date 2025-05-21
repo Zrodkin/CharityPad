@@ -4,6 +4,7 @@ struct AdminDashboardView: View {
     @State private var selectedTab: String? = "home"
     @State private var showingKiosk = false
     @State private var showLogoutAlert = false
+    @State private var isLoggingOut = false
     @AppStorage("isInAdminMode") private var isInAdminMode: Bool = true
     @EnvironmentObject private var organizationStore: OrganizationStore
     @EnvironmentObject private var kioskStore: KioskStore
@@ -158,11 +159,99 @@ struct AdminDashboardView: View {
                 title: Text("Are you sure you want to logout?"),
                 message: Text("You will need to log back in to access the admin panel."),
                 primaryButton: .destructive(Text("Logout")) {
-                    // Reset onboarding flag to go back to login screen
-                    UserDefaults.standard.set(false, forKey: "hasCompletedOnboarding")
+                    // Call the comprehensive logout method
+                    performCompleteLogout()
                 },
                 secondaryButton: .cancel()
             )
+        }
+        // Add loading overlay when logging out
+        .overlay(
+            Group {
+                if isLoggingOut {
+                    ZStack {
+                        Color.black.opacity(0.6)
+                            .edgesIgnoringSafeArea(.all)
+                        
+                        VStack(spacing: 16) {
+                            ProgressView()
+                                .scaleEffect(1.5)
+                                .padding()
+                            
+                            Text("Logging out...")
+                                .font(.headline)
+                                .foregroundColor(.white)
+                                .padding(.bottom, 4)
+                            
+                            Text("Please wait while we clean up your session")
+                                .font(.caption)
+                                .foregroundColor(.white.opacity(0.8))
+                        }
+                        .padding(24)
+                        .background(Color(.systemBackground).opacity(0.9))
+                        .cornerRadius(16)
+                        .shadow(radius: 10)
+                    }
+                    .transition(.opacity)
+                    .animation(.easeInOut, value: isLoggingOut)
+                }
+            }
+        )
+        // Add a receiver for authentication state changes
+        .onReceive(NotificationCenter.default.publisher(for: .squareAuthenticationStatusChanged)) { _ in
+            // This ensures the UI updates when auth state changes during logout
+            print("Received authentication status change notification")
+        }
+    }
+    
+    // MARK: - Logout Methods
+    
+    private func performCompleteLogout() {
+        // 1. First show loading indicator
+        isLoggingOut = true
+        
+        // 2. Try to disconnect from the server first to clean up server-side
+        squareAuthService.disconnectFromServer { success in
+            // Whether server disconnect succeeds or fails, continue with local cleanup
+            print("Server disconnect \(success ? "succeeded" : "failed"), continuing with local cleanup")
+            
+            // 3. Deauthorize the SDK
+            if self.squareAuthService.isAuthenticated {
+                self.squarePaymentService.deauthorizeSDK {
+                    self.continueLogoutAfterDeauthorization()
+                }
+            } else {
+                // If not authenticated, skip SDK deauthorization
+                self.continueLogoutAfterDeauthorization()
+            }
+        }
+    }
+
+    private func continueLogoutAfterDeauthorization() {
+        // 4. Stop all monitoring processes
+        squareReaderService.stopMonitoring()
+        
+        // 5. Clear any cached data
+        donationViewModel.resetDonation()
+        
+        // 6. Final cleanup with delay to ensure all processes complete
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            // 7. Set to admin mode first to prevent any navigation issues
+            self.isInAdminMode = true
+            
+            // 8. Clear local auth data
+            self.squareAuthService.clearLocalAuthData()
+            
+            // 9. Finally update onboarding flag to trigger ContentView transition
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                UserDefaults.standard.set(false, forKey: "hasCompletedOnboarding")
+                
+                // 10. Reset logout state
+                self.isLoggingOut = false
+                
+                // 11. Force a UI refresh
+                NotificationCenter.default.post(name: NSNotification.Name("ForceViewRefresh"), object: nil)
+            }
         }
     }
 }

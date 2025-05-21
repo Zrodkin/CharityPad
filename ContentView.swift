@@ -1,6 +1,8 @@
 import SwiftUI
 
 struct ContentView: View {
+    // Add a state variable to force refreshes
+    @State private var refreshTrigger = false
     @AppStorage("hasCompletedOnboarding") private var hasCompletedOnboarding: Bool = false
     @AppStorage("isInAdminMode") private var isInAdminMode: Bool = true
     @EnvironmentObject private var donationViewModel: DonationViewModel
@@ -17,6 +19,11 @@ struct ContentView: View {
                     .environmentObject(kioskStore)
                     .environmentObject(donationViewModel)
                     .environmentObject(squareAuthService)
+                    // Add reset logic when showing OnboardingView
+                    .onAppear {
+                        // Reset any other state when showing onboarding
+                        resetAppState()
+                    }
             } else if isInAdminMode {
                 AdminDashboardView()
                     .environmentObject(organizationStore)
@@ -29,6 +36,12 @@ struct ContentView: View {
                     .environmentObject(kioskStore)
                     .environmentObject(squareAuthService)
             }
+        }
+        // Add this to force UI refresh when needed
+        .id("main-content-\(refreshTrigger)")
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("ForceViewRefresh"))) { _ in
+            // Force view refresh by toggling the trigger
+            refreshTrigger.toggle()
         }
         .onAppear {
             // Ensure we default to admin mode when app starts
@@ -53,6 +66,20 @@ struct ContentView: View {
                 squarePaymentService.initializeSDK()
             }
         }
+    }
+    
+    // Add a function to reset app state when needed
+    private func resetAppState() {
+        // Reset any in-memory state that might be causing issues
+        // This runs when returning to onboarding/login screen
+        squareAuthService.authError = nil
+        squareAuthService.isAuthenticating = false
+        
+        // Reset donation state
+        donationViewModel.resetDonation()
+        
+        // Ensure in-memory state is clean for a fresh start
+        print("App state reset for fresh onboarding")
     }
 }
 
