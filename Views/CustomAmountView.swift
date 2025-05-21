@@ -1,11 +1,13 @@
 import SwiftUI
 
-struct CustomAmountView: View {
+struct UpdatedCustomAmountView: View {
     @EnvironmentObject var kioskStore: KioskStore
-    @EnvironmentObject var donationViewModel: DonationViewModel
     @Environment(\.dismiss) private var dismiss
-    @State private var navigateToCheckout = false
+    @State private var amountString: String = ""
     @State private var errorMessage: String? = nil
+    
+    // Callback for when amount is selected
+    var onAmountSelected: (Double) -> Void
     
     var body: some View {
         ZStack {
@@ -30,7 +32,7 @@ struct CustomAmountView: View {
             
             VStack(spacing: 20) {
                 // Amount display
-                Text("$\(donationViewModel.customAmount)")
+                Text("$\(amountString.isEmpty ? "0" : amountString)")
                     .font(.system(size: 65, weight: .bold))
                     .foregroundColor(.white)
                     .padding(.top, 120)
@@ -99,24 +101,7 @@ struct CustomAmountView: View {
                         
                         // Next button
                         Button(action: {
-                            // Ensure customAmount can be converted to a Double and is within min/max range
-                            if let amount = Double(donationViewModel.customAmount),
-                               let minAmount = Double(kioskStore.minAmount),
-                               let maxAmount = Double(kioskStore.maxAmount) {
-                                
-                                if amount < minAmount {
-                                    errorMessage = "Minimum amount is $\(Int(minAmount))"
-                                    return
-                                }
-                                
-                                if amount > maxAmount {
-                                    errorMessage = "Maximum amount is $\(Int(maxAmount))"
-                                    return
-                                }
-                                
-                                donationViewModel.selectedAmount = amount
-                                navigateToCheckout = true
-                            }
+                            handleDone()
                         }) {
                             ZStack {
                                 RoundedRectangle(cornerRadius: 12)
@@ -128,6 +113,7 @@ struct CustomAmountView: View {
                                     .foregroundColor(.white)
                             }
                         }
+                        .disabled(amountString.isEmpty)
                     }
                 }
                 .padding(.horizontal, 20)
@@ -150,34 +136,21 @@ struct CustomAmountView: View {
                 }
             }
         }
-        .navigationDestination(isPresented: $navigateToCheckout) {
-            CheckoutView(
-                amount: Double(donationViewModel.customAmount) ?? 0,
-                onDismiss: {
-                    // When CheckoutView is dismissed, set navigateToCheckout to false
-                    // to return to this view
-                    navigateToCheckout = false
-                }
-            )
-        }
     }
+    
+    // MARK: - Helper Methods
     
     private func handleNumberPress(_ num: String) {
         // Limit the number of digits to prevent overflow or excessively long numbers
         let maxDigits = 7
         
         // Prevent adding leading zeros if the amount is already "0"
-        if donationViewModel.customAmount == "0" && num == "0" {
+        if amountString.isEmpty && num == "0" {
             return
         }
         
         // Create a temporary string to check if the new amount would exceed the max
-        let tempAmount: String
-        if donationViewModel.customAmount == "0" {
-            tempAmount = num
-        } else {
-            tempAmount = donationViewModel.customAmount + num
-        }
+        let tempAmount = amountString + num
         
         // Check if the new amount would exceed the max amount
         if let amount = Double(tempAmount),
@@ -188,12 +161,9 @@ struct CustomAmountView: View {
             }
         }
         
-        // If current amount is "0", replace it with the new number (unless it's "0" again)
-        if donationViewModel.customAmount == "0" {
-            donationViewModel.customAmount = num
-        } else if donationViewModel.customAmount.count < maxDigits {
-            // Append the number if under max digits
-            donationViewModel.customAmount += num
+        // Append the number if under max digits
+        if amountString.count < maxDigits {
+            amountString += num
         }
         
         // Clear error message when valid input is entered
@@ -201,15 +171,37 @@ struct CustomAmountView: View {
     }
     
     private func handleDelete() {
-        if donationViewModel.customAmount.count > 1 {
-            donationViewModel.customAmount.removeLast()
-        } else {
-            // If only one digit is left, or it's already "0", set to "0"
-            donationViewModel.customAmount = "0"
+        if !amountString.isEmpty {
+            amountString.removeLast()
         }
         
         // Clear error message when deleting
         errorMessage = nil
+    }
+    
+    private func handleDone() {
+        // Convert amount to Double
+        if let amount = Double(amountString), amount > 0 {
+            // Check minimum amount
+            if let minAmount = Double(kioskStore.minAmount), amount < minAmount {
+                errorMessage = "Minimum amount is $\(Int(minAmount))"
+                return
+            }
+            
+            // Check maximum amount
+            if let maxAmount = Double(kioskStore.maxAmount), amount > maxAmount {
+                errorMessage = "Maximum amount is $\(Int(maxAmount))"
+                return
+            }
+            
+            // Call the callback with the selected amount
+            onAmountSelected(amount)
+            
+            // Dismiss this view
+            dismiss()
+        } else {
+            errorMessage = "Please enter a valid amount"
+        }
     }
 }
 
@@ -238,5 +230,12 @@ struct KeypadButton: View {
                     .fill(Color.white.opacity(0.2)) // Semi-transparent background
             )
         }
+    }
+}
+
+struct UpdatedCustomAmountView_Previews: PreviewProvider {
+    static var previews: some View {
+        UpdatedCustomAmountView(onAmountSelected: { _ in })
+            .environmentObject(KioskStore())
     }
 }

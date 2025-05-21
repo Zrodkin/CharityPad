@@ -1,21 +1,22 @@
 import SwiftUI
 
-struct PresetAmountsView: View {
+struct UpdatedPresetAmountsView: View {
     @EnvironmentObject private var kioskStore: KioskStore
-    @State private var presetAmounts: [PresetAmount] = []
+    @EnvironmentObject private var squareAuthService: SquareAuthService
+    @EnvironmentObject private var catalogService: SquareCatalogService
+    
     @State private var allowCustomAmount: Bool = true
     @State private var minAmount: String = "1"
     @State private var maxAmount: String = "100000"
     @State private var isDirty = false
     @State private var isSaving = false
     @State private var showToast = false
+    @State private var toastMessage = "Settings saved successfully"
+    @State private var showingAuthSheet = false
     
-    // Define columns for the grid layout
-    private let columns = [
-        GridItem(.flexible()),
-        GridItem(.flexible()),
-        GridItem(.flexible())
-    ]
+    // State for adding new amount
+    @State private var showingAddAmountSheet = false
+    @State private var newAmountString = ""
     
     // Background gradient colors
     private let gradientColors = [
@@ -30,6 +31,9 @@ struct PresetAmountsView: View {
             VStack(spacing: 20) {
                 // Unsaved changes badge
                 unsavedChangesBadge
+                
+                // Square connection status
+                squareConnectionStatus
                 
                 // Two column layout for iPad
                 HStack(alignment: .top, spacing: 20) {
@@ -51,9 +55,29 @@ struct PresetAmountsView: View {
             )
             .onAppear {
                 loadSettings()
+                
+                // Connect catalog service to kiosk store
+                kioskStore.connectCatalogService(catalogService)
+                
+                // Fetch donations from catalog if authenticated
+                if squareAuthService.isAuthenticated {
+                    catalogService.fetchPresetDonations()
+                }
+            }
+            .onChange(of: squareAuthService.isAuthenticated) { _, isAuthenticated in
+                if isAuthenticated {
+                    // Refresh when authentication changes
+                    catalogService.fetchPresetDonations()
+                }
             }
             .overlay(toastOverlay)
             .navigationTitle("Preset Amounts")
+            .sheet(isPresented: $showingAuthSheet) {
+                SquareAuthorizationView()
+            }
+            .sheet(isPresented: $showingAddAmountSheet) {
+                addAmountSheet
+            }
         }
     }
     
@@ -80,6 +104,48 @@ struct PresetAmountsView: View {
         }
     }
     
+    private var squareConnectionStatus: some View {
+        Group {
+            HStack {
+                Circle()
+                    .fill(squareAuthService.isAuthenticated ? Color.green : Color.red)
+                    .frame(width: 12, height: 12)
+                
+                Text(squareAuthService.isAuthenticated ?
+                     "Connected to Square" :
+                     "Not connected to Square")
+                    .foregroundColor(squareAuthService.isAuthenticated ? .green : .red)
+                
+                Spacer()
+                
+                if !squareAuthService.isAuthenticated {
+                    Button("Connect") {
+                        showingAuthSheet = true
+                    }
+                    .buttonStyle(.borderedProminent)
+                } else if kioskStore.isSyncingWithCatalog {
+                    // Show sync indicator
+                    HStack {
+                        ProgressView()
+                            .progressViewStyle(CircularProgressViewStyle())
+                            .scaleEffect(0.8)
+                        
+                        Text("Syncing...")
+                            .font(.caption)
+                    }
+                } else if let lastSyncTime = kioskStore.lastSyncTime {
+                    // Show last sync time
+                    Text("Last synced: \(formatDate(lastSyncTime))")
+                        .font(.caption)
+                        .foregroundColor(.gray)
+                }
+            }
+            .padding()
+            .background(Color.white.opacity(0.85))
+            .cornerRadius(15)
+        }
+    }
+    
     private var presetAmountsColumn: some View {
         VStack(alignment: .leading, spacing: 15) {
             Text("Preset Amounts")
@@ -90,16 +156,34 @@ struct PresetAmountsView: View {
                 .foregroundColor(.gray)
             
             VStack(spacing: 15) {
-                ForEach(presetAmounts.indices, id: \.self) { index in
-                    presetAmountRow(for: index)
+                // Preset donation amounts list
+                ForEach(Array(kioskStore.presetDonations.enumerated()), id: \.offset) { index, donation in
+                    presetDonationRow(for: index, donation: donation)
                 }
                 
                 addAmountButton
                 
-                Text("These amounts will be displayed as buttons on the donation screen.")
-                    .font(.caption)
-                    .foregroundColor(.gray)
-                    .padding(.top, 10)
+                // Info text
+                Group {
+                    if squareAuthService.isAuthenticated {
+                        Text("Preset amounts will be synchronized with your Square catalog and displayed in the donation screen.")
+                            .font(.caption)
+                            .foregroundColor(.gray)
+                    } else {
+                        Text("Connect to Square to sync preset amounts with your catalog.")
+                            .font(.caption)
+                            .foregroundColor(.gray)
+                    }
+                }
+                .padding(.top, 10)
+                
+                // Error message if any
+                if let error = kioskStore.lastSyncError {
+                    Text("Sync error: \(error)")
+                        .font(.caption)
+                        .foregroundColor(.red)
+                        .padding(.top, 5)
+                }
             }
             .padding()
             .background(Color.white.opacity(0.85))
@@ -107,17 +191,20 @@ struct PresetAmountsView: View {
         }
     }
     
-    private func presetAmountRow(for index: Int) -> some View {
+    private func presetDonationRow(for index: Int, donation: PresetDonation) -> some View {
         HStack {
             HStack {
                 Text("$")
                     .foregroundColor(.gray)
                 
-                TextField("Amount", text: $presetAmounts[index].amount)
-                    .keyboardType(.numberPad)
-                    .onChange(of: presetAmounts[index].amount) { _, _ in
+                TextField("Amount", text: Binding(
+                    get: { donation.amount },
+                    set: { newValue in
+                        kioskStore.updatePresetDonation(at: index, amount: newValue)
                         isDirty = true
                     }
+                ))
+                .keyboardType(.numberPad)
             }
             .padding(10)
             .background(Color.white)
@@ -127,11 +214,22 @@ struct PresetAmountsView: View {
                     .stroke(Color.gray.opacity(0.2), lineWidth: 1)
             )
             
-            Button(action: {
-                if presetAmounts.count > 1 {
-                    presetAmounts.remove(at: index)
-                    isDirty = true
+            // Sync status indicator
+            Group {
+                if donation.isSync {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundColor(.green)
+                        .help("Synced with Square catalog")
+                } else if squareAuthService.isAuthenticated {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundColor(.orange)
+                        .help("Not synced with Square catalog")
                 }
+            }
+            
+            Button(action: {
+                kioskStore.removePresetDonation(at: index)
+                isDirty = true
             }) {
                 Image(systemName: "trash")
                     .foregroundColor(.red)
@@ -143,16 +241,15 @@ struct PresetAmountsView: View {
                             .stroke(Color.gray.opacity(0.2), lineWidth: 1)
                     )
             }
-            .disabled(presetAmounts.count <= 1)
+            .disabled(kioskStore.presetDonations.count <= 1)
         }
     }
     
     private var addAmountButton: some View {
         Group {
-            if presetAmounts.count < 6 {
+            if kioskStore.presetDonations.count < 6 {
                 Button(action: {
-                    presetAmounts.append(PresetAmount(id: UUID().uuidString, amount: ""))
-                    isDirty = true
+                    showingAddAmountSheet = true
                 }) {
                     HStack {
                         Image(systemName: "plus")
@@ -190,7 +287,29 @@ struct PresetAmountsView: View {
                     .foregroundColor(.gray)
                 
                 // Save button
-                saveButton
+                HStack {
+                    Spacer()
+                    
+                    Button(action: saveSettings) {
+                        HStack {
+                            if isSaving || kioskStore.isSyncingWithCatalog {
+                                ProgressView()
+                                    .progressViewStyle(CircularProgressViewStyle())
+                                    .padding(.trailing, 5)
+                                Text(kioskStore.isSyncingWithCatalog ? "Syncing..." : "Saving...")
+                            } else {
+                                Image(systemName: "square.and.arrow.down")
+                                    .padding(.trailing, 5)
+                                Text("Save Changes")
+                            }
+                        }
+                        .padding()
+                        .background(isDirty && !isSaving && !kioskStore.isSyncingWithCatalog ? Color.blue : Color.gray)
+                        .foregroundColor(.white)
+                        .cornerRadius(8)
+                    }
+                    .disabled(!isDirty || isSaving || kioskStore.isSyncingWithCatalog)
+                }
             }
             .padding()
             .background(Color.white.opacity(0.85))
@@ -265,36 +384,10 @@ struct PresetAmountsView: View {
         }
     }
     
-    private var saveButton: some View {
-        HStack {
-            Spacer()
-            
-            Button(action: saveSettings) {
-                HStack {
-                    if isSaving {
-                        ProgressView()
-                            .progressViewStyle(CircularProgressViewStyle())
-                            .padding(.trailing, 5)
-                        Text("Saving...")
-                    } else {
-                        Image(systemName: "square.and.arrow.down")
-                            .padding(.trailing, 5)
-                        Text("Save Changes")
-                    }
-                }
-                .padding()
-                .background(isDirty ? Color.blue : Color.gray)
-                .foregroundColor(.white)
-                .cornerRadius(8)
-            }
-            .disabled(!isDirty || isSaving)
-        }
-    }
-    
     private var toastOverlay: some View {
         Group {
             if showToast {
-                ToastView(message: "Settings saved successfully")
+                ToastView(message: toastMessage)
                     .transition(.move(edge: .top))
                     .animation(.spring(), value: showToast)
                     .onAppear {
@@ -306,43 +399,96 @@ struct PresetAmountsView: View {
         }
     }
     
+    private var addAmountSheet: some View {
+        VStack(spacing: 20) {
+            Text("Add Preset Amount")
+                .font(.title2)
+                .fontWeight(.bold)
+            
+            HStack {
+                Text("$")
+                    .font(.title)
+                    .foregroundColor(.gray)
+                
+                TextField("Amount", text: $newAmountString)
+                    .font(.title)
+                    .keyboardType(.decimalPad)
+                    .multilineTextAlignment(.center)
+                    .padding()
+                    .background(Color.gray.opacity(0.1))
+                    .cornerRadius(8)
+            }
+            .padding(.horizontal)
+            
+            HStack(spacing: 20) {
+                Button("Cancel") {
+                    newAmountString = ""
+                    showingAddAmountSheet = false
+                }
+                .buttonStyle(.bordered)
+                
+                Button("Add") {
+                    if let amount = Double(newAmountString), amount > 0 {
+                        kioskStore.addPresetDonation(amount: newAmountString)
+                        isDirty = true
+                        showingAddAmountSheet = false
+                        newAmountString = ""
+                    } else {
+                        // Show invalid amount error
+                        toastMessage = "Please enter a valid amount"
+                        showToast = true
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(newAmountString.isEmpty || Double(newAmountString) == nil)
+            }
+            .padding()
+        }
+        .padding()
+    }
+    
     // MARK: - Functions
     
     func loadSettings() {
-        // Convert string array to PresetAmount objects
-        presetAmounts = kioskStore.presetAmounts.map { PresetAmount(id: UUID().uuidString, amount: $0) }
+        // Copy data from kioskStore to local state
         allowCustomAmount = kioskStore.allowCustomAmount
         minAmount = kioskStore.minAmount
         maxAmount = kioskStore.maxAmount
+        isDirty = false
     }
     
     func saveSettings() {
         isSaving = true
         
         // Update the store
-        kioskStore.presetAmounts = presetAmounts.map { $0.amount }
         kioskStore.allowCustomAmount = allowCustomAmount
         kioskStore.minAmount = minAmount
         kioskStore.maxAmount = maxAmount
         
         // Simulate network delay
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
-            kioskStore.saveSettings()
+            kioskStore.saveSettings() // This will also trigger the catalog sync
             isSaving = false
             isDirty = false
+            toastMessage = "Settings saved successfully"
             showToast = true
         }
     }
+    
+    /// Format a date for display
+    private func formatDate(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .short
+        formatter.timeStyle = .short
+        return formatter.string(from: date)
+    }
 }
 
-struct PresetAmount: Identifiable {
-    var id: String
-    var amount: String
-}
-
-struct PresetAmountsView_Previews: PreviewProvider {
+struct UpdatedPresetAmountsView_Previews: PreviewProvider {
     static var previews: some View {
-        PresetAmountsView()
+        UpdatedPresetAmountsView()
             .environmentObject(KioskStore())
+            .environmentObject(SquareAuthService())
+            .environmentObject(SquareCatalogService(authService: SquareAuthService()))
     }
 }

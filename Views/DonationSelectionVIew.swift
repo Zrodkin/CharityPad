@@ -1,8 +1,11 @@
 import SwiftUI
 
-struct DonationSelectionView: View {
+struct UpdatedDonationSelectionView: View {
     @EnvironmentObject var kioskStore: KioskStore
     @EnvironmentObject var donationViewModel: DonationViewModel
+    @EnvironmentObject var squareAuthService: SquareAuthService
+    @EnvironmentObject var catalogService: SquareCatalogService
+    
     @State private var navigateToCustomAmount = false
     @State private var navigateToCheckout = false
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
@@ -39,12 +42,17 @@ struct DonationSelectionView: View {
                 VStack(spacing: 16) {
                     // Grid layout for preset amounts
                     LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 16), count: 3), spacing: 16) {
-                        ForEach(0..<donationViewModel.presetAmounts.count, id: \.self) { index in
-                            AmountButton(amount: donationViewModel.presetAmounts[index]) {
-                                donationViewModel.selectedAmount = donationViewModel.presetAmounts[index]
-                                donationViewModel.isCustomAmount = false
-                                navigateToCheckout = true
-                            }
+                        ForEach(0..<kioskStore.presetDonations.count, id: \.self) { index in
+                            AmountButton(
+                                amount: Double(kioskStore.presetDonations[index].amount) ?? 0,
+                                isSynced: kioskStore.presetDonations[index].isSync,
+                                action: {
+                                    let donationAmount = Double(kioskStore.presetDonations[index].amount) ?? 0
+                                    donationViewModel.selectedAmount = donationAmount
+                                    donationViewModel.isCustomAmount = false
+                                    navigateToCheckout = true
+                                }
+                            )
                             .frame(maxWidth: .infinity)
                         }
                     }
@@ -70,19 +78,50 @@ struct DonationSelectionView: View {
                 .frame(maxWidth: horizontalSizeClass == .regular ? 800 : 500)
                 .padding(.horizontal, 20)
                 
+                // Status indicator for Square
+                if squareAuthService.isAuthenticated {
+                    HStack {
+                        Circle()
+                            .fill(Color.green)
+                            .frame(width: 8, height: 8)
+                        Text("Connected to Square")
+                            .font(.caption)
+                            .foregroundColor(.green)
+                    }
+                    .padding(.top, 20)
+                }
+                
                 Spacer()
             }
         }
         .navigationBarTitleDisplayMode(.inline)
         .navigationBarBackButtonHidden(false)
+        .onAppear {
+            // Fetch donation items from catalog if authenticated
+            if squareAuthService.isAuthenticated {
+                // Connect kioskStore to catalog service
+                kioskStore.connectCatalogService(catalogService)
+                
+                // Load preset donations from catalog
+                kioskStore.loadPresetDonationsFromCatalog()
+            }
+            
+            // Make sure donation view model is updated with current preset amounts
+            updateDonationViewModel()
+        }
         // Navigation destination for Custom Amount
         .navigationDestination(isPresented: $navigateToCustomAmount) {
-            CustomAmountView()
+            UpdatedCustomAmountView(onAmountSelected: { amount in
+                donationViewModel.selectedAmount = amount
+                donationViewModel.isCustomAmount = true
+                navigateToCheckout = true
+            })
         }
         // Navigation destination for Checkout
         .navigationDestination(isPresented: $navigateToCheckout) {
-            CheckoutView(
+            UpdatedCheckoutView(
                 amount: donationViewModel.selectedAmount ?? 0,
+                isCustomAmount: donationViewModel.isCustomAmount,
                 onDismiss: {
                     // When CheckoutView is dismissed, set navigateToCheckout to false
                     // to return to this view
@@ -91,23 +130,56 @@ struct DonationSelectionView: View {
             )
         }
     }
+    
+    // Update the donation view model with current preset amounts
+    private func updateDonationViewModel() {
+        let amounts = kioskStore.presetDonations.compactMap { Double($0.amount) }
+        if !amounts.isEmpty {
+            donationViewModel.presetAmounts = amounts
+        }
+    }
 }
 
+// Enhanced amount button that shows sync status
 struct AmountButton: View {
     let amount: Double
+    let isSynced: Bool
     let action: () -> Void
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     
     var body: some View {
         Button(action: action) {
-            Text("$\(Int(amount))") // Displaying amount as Int for cleaner UI
-                .font(.system(size: horizontalSizeClass == .regular ? 24 : 20, weight: .semibold))
-                .foregroundColor(.white)
-                .frame(maxWidth: .infinity)
-                .frame(height: horizontalSizeClass == .regular ? 80 : 60)
-                .background(Color.white.opacity(0.3))
-                .cornerRadius(15)
+            ZStack {
+                // Button background
+                RoundedRectangle(cornerRadius: 15)
+                    .fill(Color.white.opacity(0.3))
+                
+                // Button content
+                VStack(spacing: 4) {
+                    Text("$\(Int(amount))")
+                        .font(.system(size: horizontalSizeClass == .regular ? 24 : 20, weight: .semibold))
+                        .foregroundColor(.white)
+                    
+                    // Show sync indicator for admins (not visible in actual kiosk mode)
+                    if isSynced {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 12))
+                            .foregroundColor(.green)
+                    }
+                }
+            }
+            .frame(height: horizontalSizeClass == .regular ? 80 : 60)
         }
         .padding(.horizontal, 0)
+    }
+}
+
+struct UpdatedDonationSelectionView_Previews: PreviewProvider {
+    static var previews: some View {
+        UpdatedDonationSelectionView()
+            .environmentObject(KioskStore())
+            .environmentObject(DonationViewModel())
+            .environmentObject(SquareAuthService())
+            .environmentObject(SquareCatalogService(authService: SquareAuthService()))
     }
 }
