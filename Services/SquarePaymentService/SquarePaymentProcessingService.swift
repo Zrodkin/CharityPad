@@ -77,7 +77,12 @@ class SquarePaymentProcessingService: NSObject {
         let transactionId = "txn_\(Int(amount * 100))_\(Int(Date().timeIntervalSince1970))"
         
         // Get or create idempotency key for this transaction
-        let idempotencyKey = idempotencyKeyManager.getKey(for: transactionId)
+        // Get or create idempotency key for this transaction (Square's official pattern)
+        let idempotencyKey = idempotencyKeyManager.getKey(for: transactionId) ?? {
+            let newKey = UUID().uuidString
+            idempotencyKeyManager.store(id: transactionId, idempotencyKey: newKey)
+            return newKey
+        }()
         
         // Determine the processing mode based on offline support
         let processingMode: ProcessingMode

@@ -1,63 +1,51 @@
-//
-//  IdempotencyKeyManager.swift
-//  CharityPadWSquare
-//
-//  Created by Wilkes Shluchim on 5/18/25.
-//
-
 import Foundation
-import SquareMobilePaymentsSDK
 
-/// Manages idempotency keys for payments to prevent duplicate charges
+/// Manages the association between business-logic specific identifiers and uniquely generated idempotency keys.
 class IdempotencyKeyManager {
-    // MARK: - Private Properties
-    
+    typealias IdempotencyKey = String
+
+    // MARK: - Properties
+
     private let userDefaultsKey = "IdempotencyKeys"
-    private var storage: [String: String] = [:]
-    
-    // MARK: - Initialization
-    
+
+    private var storage: [String: IdempotencyKey] = [:] {
+        didSet {
+            saveToUserDefaults()
+        }
+    }
+
+    // MARK: - Initializers
+
     init() {
-        loadFromUserDefaults()
+        storage = loadFromUserDefaults() ?? [:]
     }
-    
-    // MARK: - Public Methods
-    
-    /// Get an existing key for a transaction or create a new one
-    func getKey(for transactionId: String) -> String {
-        if let existingKey = storage[transactionId] {
-            return existingKey
-        }
-        
-        let newKey = UUID().uuidString
-        storage[transactionId] = newKey
-        saveToUserDefaults()
-        return newKey
+
+    // MARK: - Methods
+
+    /// Store an idempotency key for a transaction ID
+    func store(id: String, idempotencyKey: IdempotencyKey) {
+        storage[id] = idempotencyKey
     }
-    
-    /// Remove a key for a transaction
-    func removeKey(for transactionId: String) {
-        storage.removeValue(forKey: transactionId)
-        saveToUserDefaults()
+
+    /// Remove an idempotency key for a transaction ID
+    func removeKey(for id: String) {
+        storage.removeValue(forKey: id)
     }
-    
-    /// Clear all stored keys
-    func clearAllKeys() {
-        storage.removeAll()
-        saveToUserDefaults()
+
+    /// Get an idempotency key for a transaction ID (returns nil if not found)
+    func getKey(for id: String) -> IdempotencyKey? {
+        return storage[id]
     }
-    
+
     // MARK: - Private Methods
-    
-    /// Load stored keys from UserDefaults
-    private func loadFromUserDefaults() {
-        if let data = UserDefaults.standard.data(forKey: userDefaultsKey),
-           let stored = try? JSONDecoder().decode([String: String].self, from: data) {
-            storage = stored
+
+    private func loadFromUserDefaults() -> [String: IdempotencyKey]? {
+        if let data = UserDefaults.standard.data(forKey: userDefaultsKey) {
+            return try? JSONDecoder().decode([String: IdempotencyKey].self, from: data)
         }
+        return nil
     }
-    
-    /// Save keys to UserDefaults
+
     private func saveToUserDefaults() {
         if let data = try? JSONEncoder().encode(storage) {
             UserDefaults.standard.set(data, forKey: userDefaultsKey)
