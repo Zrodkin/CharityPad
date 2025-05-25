@@ -85,44 +85,98 @@ class SquarePaymentService: NSObject, ObservableObject {
     // MARK: - Public Methods
     
     /// Process a payment using Square SDK directly (current working approach)
-    func processPayment(amount: Double,
-                        isCustomAmount: Bool = false,
-                        catalogItemId: String? = nil,
-                        completion: @escaping (Bool, String?) -> Void) {
-        
-        // Ensure we're authenticated
-        guard authService.isAuthenticated else {
-            paymentError = "Not connected to Square"
-            completion(false, nil)
-            return
-        }
-        
+    func processPayment(amount: Double, allowOffline: Bool, supportsOfflinePayments: Bool, completion: @escaping (Bool, String?) -> Void) {
         // Ensure SDK is initialized
-        guard isSDKAuthorized() else {
-            initializeSDK()
-            paymentError = "Square SDK not authorized yet"
-            completion(false, nil)
+        guard let _ = try? MobilePaymentsSDK.shared else {
+            DispatchQueue.main.async { [weak self] in
+                self?.updatePaymentError("Square SDK not initialized")
+                completion(false, nil)
+            }
             return
         }
         
-        // Ensure reader is connected
-        guard isReaderConnected else {
-            paymentError = "Card reader not connected"
-            completion(false, nil)
+        // Verify authentication
+        guard let authService = authService, authService.isAuthenticated else {
+            DispatchQueue.main.async { [weak self] in
+                self?.updatePaymentError("Not authenticated with Square")
+                completion(false, nil)
+            }
             return
         }
         
-        // Set processing state
-        isProcessingPayment = true
-        paymentError = nil
-        currentOrderId = nil
-        currentProcessingMode = .direct
+        // Ensure SDK is authorized
+        guard MobilePaymentsSDK.shared.authorizationManager.state == .authorized else {
+            DispatchQueue.main.async { [weak self] in
+                self?.paymentService?.initializeSDK()
+                completion(false, nil)
+            }
+            return
+        }
         
-        // Store completion handler
-        mainPaymentCompletion = completion
+        DispatchQueue.main.async { [weak self] in
+            self?.updateIsProcessingPayment(true)
+            self?.updatePaymentError(nil)
+        }
         
-        // Process payment directly through SDK
-        processDirectPayment(amount: amount)
+        // Calculate amount in cents
+        let amountInCents = UInt(amount * 100)
+        
+        // Find the view controller to present the payment UI
+        guard let presentedVC = getTopViewController() else {
+            DispatchQueue.main.async { [weak self] in
+                self?.updateIsProcessingPayment(false)
+                self?.updatePaymentError("Unable to find view controller to present payment UI")
+                completion(false, nil)
+            }
+            return
+        }
+        
+        // Generate a transaction ID based on amount and timestamp
+        let transactionId = "txn_\(Int(amount * 100))_\(Int(Date().timeIntervalSince1970))"
+        
+        // Get or create idempotency key for this transaction
+        let idempotencyKey = idempotencyKeyManager.getKey(for: transactionId)
+        
+        // Determine the processing mode based on offline support
+        let processingMode: ProcessingMode
+        if allowOffline && supportsOfflinePayments {
+            processingMode = .autoDetect  // Will try online, fall back to offline if needed
+        } else {
+            processingMode = .onlineOnly  // Only process payments online
+        }
+        
+        // Create MoneyAmount with correct type
+        let moneyAmount = MoneyAmount(amount: amountInCents, currency: .USD)
+        
+        // Create payment parameters with appropriate processing mode
+        let paymentParameters = PaymentParameters(
+            idempotencyKey: idempotencyKey,
+            amountMoney: moneyAmount,  // Using MoneyAmount instead of Money
+            processingMode: processingMode
+        )
+        
+        // Create prompt parameters
+        let promptParameters = PromptParameters(
+            mode: .default,
+            additionalMethods: .all
+        )
+        
+        // Create payment delegate
+        let paymentDelegate = PaymentDelegate(
+            service: self,
+            transactionId: transactionId,
+            idempotencyManager: idempotencyKeyManager,
+            supportsOfflinePayments: supportsOfflinePayments,
+            completion: completion
+        )
+        
+        // Start the payment
+        paymentHandle = MobilePaymentsSDK.shared.paymentManager.startPayment(
+            paymentParameters,
+            promptParameters: promptParameters,
+            from: presentedVC,
+            delegate: paymentDelegate
+        )
     }
     
     /// Future enhancement: Process payment with order creation + backend processing
@@ -220,10 +274,14 @@ class SquarePaymentService: NSObject, ObservableObject {
         // Generate a unique idempotency key for this payment
         let idempotencyKey = UUID().uuidString
         
-        // Create payment parameters
+        // Create MoneyAmount instead of Money
+        let amountInCents = UInt(amount * 100)
+        let moneyAmount = MoneyAmount(amount: amountInCents, currency: .USD)
+        
+        // Create payment parameters with correct types
         let paymentParameters = PaymentParameters(
             idempotencyKey: idempotencyKey,
-            amountMoney: Money(amount: UInt(amount * 100), currency: .USD),
+            amountMoney: moneyAmount,  // Using MoneyAmount instead of Money
             processingMode: supportsOfflinePayments ? .autoDetect : .onlineOnly
         )
         
@@ -364,6 +422,23 @@ class SquarePaymentService: NSObject, ObservableObject {
 
 extension SquarePaymentService: PaymentManagerDelegate {
     
+    // REQUIRED: Missing method that needs to be added
+    func paymentManager(_ paymentManager: PaymentManager, didStart payment: Payment) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            
+            print("Payment started with ID: \(String(describing: payment.id))")
+            
+            // Update UI to show payment has started
+            self.isProcessingPayment = true
+            self.paymentError = nil
+            
+            // You can add additional logic here if needed
+            // For example, updating the connection status
+            self.connectionStatus = "Processing payment..."
+        }
+    }
+    
     func paymentManager(_ paymentManager: PaymentManager, didFinish payment: Payment) {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
@@ -371,6 +446,7 @@ extension SquarePaymentService: PaymentManagerDelegate {
             // Reset processing state
             self.isProcessingPayment = false
             self.paymentError = nil
+            self.connectionStatus = "Payment completed"
             
             print("Payment successful with ID: \(String(describing: payment.id))")
             
@@ -387,6 +463,7 @@ extension SquarePaymentService: PaymentManagerDelegate {
             // Handle payment failure
             self.isProcessingPayment = false
             self.paymentError = "Payment failed: \(error.localizedDescription)"
+            self.connectionStatus = "Payment failed"
             
             print("Payment failed: \(error.localizedDescription)")
             
@@ -403,6 +480,7 @@ extension SquarePaymentService: PaymentManagerDelegate {
             // Handle payment cancellation
             self.isProcessingPayment = false
             self.paymentError = "Payment was canceled"
+            self.connectionStatus = "Payment canceled"
             
             print("Payment was canceled by user")
             

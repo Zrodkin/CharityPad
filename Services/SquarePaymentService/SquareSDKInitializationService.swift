@@ -56,11 +56,12 @@ class SquareSDKInitializationService: NSObject, AuthorizationStateObserver {
         print("- mode: \(promptParams.mode)")
         print("- additionalMethods: \(promptParams.additionalMethods)")
         
-        // Payment parameters
+        // Payment parameters with correct MoneyAmount
         print("\n--- Payment Parameters ---")
+        let moneyAmount = MoneyAmount(amount: 100, currency: .USD)  // Using MoneyAmount instead of Money
         let paymentParams = PaymentParameters(
             idempotencyKey: UUID().uuidString,
-            amountMoney: Money(amount: 100, currency: .USD),
+            amountMoney: moneyAmount,
             processingMode: .onlineOnly
         )
         print("Successfully created PaymentParameters")

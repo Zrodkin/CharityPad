@@ -175,6 +175,16 @@ extension SquarePaymentProcessingService {
             super.init()
         }
         
+        // REQUIRED: Add this missing method
+        func paymentManager(_ paymentManager: PaymentManager, didStart payment: Payment) {
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else { return }
+                print("Payment delegate: Payment started with ID: \(String(describing: payment.id))")
+                // Update UI state if needed
+                self.service?.updateIsProcessingPayment(true)
+            }
+        }
+        
         func paymentManager(_ paymentManager: PaymentManager, didFinish payment: Payment) {
             DispatchQueue.main.async { [weak self] in
                 guard let self = self else { return }
