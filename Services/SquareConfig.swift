@@ -17,23 +17,24 @@ struct SquareConfig {
   // Organization identifier
   static let organizationId = "default"
   
-  
   // Production environment
   static let environment = "production"
   static let authorizeURL = "https://connect.squareup.com/oauth2/authorize"
   static let tokenURL = "https://connect.squareup.com/oauth2/token"
   static let revokeURL = "https://connect.squareup.com/oauth2/revoke"
 
-  
   // Your app's redirect URI (must match what's configured in Square Developer Dashboard)
   static let redirectURI = "https://charity-pad-server.vercel.app/api/square/callback"
   
-  // OAuth scopes needed for Mobile Payments SDK
+  // OAuth scopes needed for complete donation system functionality
   static let scopes = [
-      "MERCHANT_PROFILE_READ",
-      "PAYMENTS_WRITE",
-      "PAYMENTS_WRITE_IN_PERSON",
-      "PAYMENTS_READ"
+      "MERCHANT_PROFILE_READ",    // ✅ Already have - for merchant info and locations
+      "PAYMENTS_WRITE",           // ✅ Already have - for processing payments
+      "PAYMENTS_WRITE_IN_PERSON", // ✅ Already have - for in-person payments with Square hardware
+      "PAYMENTS_READ",            // ✅ Already have - for reading payment details
+      "ITEMS_READ",               // ❌ MISSING - Required for fetching preset donation amounts
+      "ITEMS_WRITE",              // ❌ MISSING - Required for managing preset donation catalog
+      "ORDERS_WRITE"              // ❌ MISSING - Required for creating donation orders
   ]
   
   // Generate the OAuth URL for authorization - using backend approach
