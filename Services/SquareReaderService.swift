@@ -16,6 +16,10 @@ class SquareReaderService: NSObject, ObservableObject {
     private let authService: SquareAuthService
     private var isInitialized = false
     
+    // Dependencies for connection logic (merged from SquareReaderConnectionService)
+    private weak var paymentService: SquarePaymentService?
+    private weak var permissionService: SquarePermissionService?
+    
     init(authService: SquareAuthService) {
         self.authService = authService
         super.init()
@@ -41,6 +45,99 @@ class SquareReaderService: NSObject, ObservableObject {
         }
         
         NotificationCenter.default.removeObserver(self)
+    }
+    
+    // MARK: - Configuration (merged from SquareReaderConnectionService)
+    
+    /// Configure the service with necessary dependencies
+    func configure(with paymentService: SquarePaymentService, permissionService: SquarePermissionService) {
+        self.paymentService = paymentService
+        self.permissionService = permissionService
+    }
+    
+    // MARK: - Connection Logic (merged from SquareReaderConnectionService)
+    
+    /// Connect to a Square reader
+    func connectToReader() {
+        // Ensure SDK is initialized and available
+        guard MobilePaymentsSDK.shared.authorizationManager.state == .authorized else {
+            // If not authorized, update connection status
+            updateConnectionStatus("Square SDK not authorized")
+            return
+        }
+        
+        // Check if permission service is available
+        guard let permissionService = self.permissionService else {
+            updateConnectionStatus("Permission service not configured")
+            return
+        }
+        
+        // Check if Bluetooth is enabled
+        if !permissionService.isBluetoothAvailable() {
+            updatePaymentError("Bluetooth is required for connecting to readers")
+            updateConnectionStatus("Bluetooth required")
+            return
+        }
+        
+        // Check if location permission is granted
+        if !permissionService.isLocationPermissionGranted() {
+            updatePaymentError("Location permission is required for connecting to readers")
+            updateConnectionStatus("Location access needed")
+            return
+        }
+        
+        // Check for available readers
+        if readers.isEmpty {
+            // No readers - start pairing if not in progress
+            if !MobilePaymentsSDK.shared.readerManager.isPairingInProgress {
+                updateConnectionStatus("No readers found. Starting pairing...")
+                startPairing()
+            } else {
+                updateConnectionStatus("Searching for readers...")
+            }
+            return
+        }
+        
+        // If we have a ready reader, select it
+        if let readyReader = readers.first(where: { $0.state == .ready }) {
+            selectReader(readyReader)
+            updateConnectionStatus("Connected to \(readyReader.model == .stand ? "Square Stand" : "Square Reader")")
+            updateReaderConnected(true)
+            updatePaymentError(nil)
+            return
+        }
+        
+        // If we have a selected reader that's not ready, show status
+        if let selectedReader = selectedReader, selectedReader.state != .ready {
+            updateConnectionStatus("Reader \(readerStateDescription(selectedReader.state))")
+            updateReaderConnected(false)
+            return
+        }
+        
+        // If we have readers but none are ready
+        updateConnectionStatus("Reader not ready. Please check reader status.")
+        updateReaderConnected(false)
+    }
+    
+    /// Update reader connection status
+    func updateReaderConnectionStatus() {
+        if readers.isEmpty {
+            updateConnectionStatus("No readers connected")
+            updateReaderConnected(false)
+            return
+        }
+        
+        if let readyReader = readers.first(where: { $0.state == .ready }) {
+            updateConnectionStatus("Connected to \(readyReader.model == .stand ? "Square Stand" : "Square Reader")")
+            updateReaderConnected(true)
+            return
+        }
+        
+        // We have readers but none are ready
+        if let firstReader = readers.first {
+            updateConnectionStatus("Reader \(readerStateDescription(firstReader.state))")
+            updateReaderConnected(false)
+        }
     }
     
     // MARK: - Debug Methods
@@ -293,7 +390,9 @@ class SquareReaderService: NSObject, ObservableObject {
             return "Updating Firmware..."
         case .failedToConnect:
             return "Failed to Connect"
-        default:
+        case .disabled:
+            return "Disabled"
+        @unknown default:
             return "Unknown State"
         }
     }
@@ -307,7 +406,11 @@ class SquareReaderService: NSObject, ObservableObject {
             return "Square Reader for magstripe"
         case .stand:
             return "Square Stand"
-        default:
+        case .tapToPay:
+            return "Tap to Pay on iPhone"
+        case .unknown:
+            return "Unknown Square Reader"
+        @unknown default:
             return "Unknown Reader Model"
         }
     }
@@ -331,7 +434,28 @@ class SquareReaderService: NSObject, ObservableObject {
         }
     }
     
-    // MARK: - Private Methods
+    // MARK: - Private Methods (merged from SquareReaderConnectionService)
+    
+    /// Update the connection status in the payment service
+    private func updateConnectionStatus(_ status: String) {
+        DispatchQueue.main.async { [weak self] in
+            self?.paymentService?.connectionStatus = status
+        }
+    }
+    
+    /// Update reader connected state in the payment service
+    private func updateReaderConnected(_ connected: Bool) {
+        DispatchQueue.main.async { [weak self] in
+            self?.paymentService?.isReaderConnected = connected
+        }
+    }
+    
+    /// Update payment error in the payment service
+    private func updatePaymentError(_ error: String?) {
+        DispatchQueue.main.async { [weak self] in
+            self?.paymentService?.paymentError = error
+        }
+    }
     
     @objc private func handleAuthenticationSuccess(_ notification: Notification) {
         // Restart monitoring when authentication completes
@@ -359,6 +483,9 @@ class SquareReaderService: NSObject, ObservableObject {
             }
             
             self.objectWillChange.send()
+            
+            // Update connection status after refreshing readers
+            self.updateReaderConnectionStatus()
         }
     }
     
@@ -385,6 +512,8 @@ extension SquareReaderService: AuthorizationStateObserver {
                 self.stopMonitoring()
                 self.readers = []
                 self.selectedReader = nil
+                self.updateConnectionStatus("Not connected to Square")
+                self.updateReaderConnected(false)
             }
         }
     }

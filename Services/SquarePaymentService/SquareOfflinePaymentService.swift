@@ -28,7 +28,7 @@ class SquareOfflinePaymentService: NSObject {
         let paymentManager = MobilePaymentsSDK.shared.paymentManager
         let offlineQueue = paymentManager.offlinePaymentQueue
         
-        // Get offline payments
+        // Get offline payments - Fixed to match official documentation
         offlineQueue.getPayments { [weak self] payments, error in
             guard let self = self else { return }
             
@@ -96,13 +96,29 @@ class SquareOfflinePaymentService: NSObject {
                     }
                 }
                 
-            case .failedToProcess, .failedToUpload:
+            case .processed:
+                // Payment has been successfully processed by Square Server
+                print("Offline payment \(payment.localID) has been processed successfully")
+                self?.updateConnectionStatus("Offline payment processed successfully")
+                
+            case .failedToProcess:
                 // Payment failed to process
                 print("Offline payment \(payment.localID) failed to process")
                 self?.updatePaymentError("An offline payment failed to process. Please check your Square dashboard.")
                 
-            default:
-                // Handle other statuses
+            case .failedToUpload:
+                // Payment failed to upload
+                print("Offline payment \(payment.localID) failed to upload")
+                self?.updatePaymentError("An offline payment failed to upload. Please check your connection.")
+                
+            case .unknown:
+                // Status is unknown
+                print("Offline payment \(payment.localID) has unknown status")
+                self?.updatePaymentError("An offline payment has unknown status. Please check your Square dashboard.")
+                
+            @unknown default:
+                // Handle future cases
+                print("Offline payment \(payment.localID) has unhandled status: \(newStatus)")
                 break
             }
         }
