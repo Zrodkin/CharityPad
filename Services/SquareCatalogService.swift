@@ -75,7 +75,6 @@ class SquareCatalogService: ObservableObject {
         isLoading = true
         error = nil
         
-        // ✅ UPDATED: Use corrected endpoint URL
         guard let url = URL(string: "\(SquareConfig.backendBaseURL)/api/square/catalog/list?organization_id=\(authService.organizationId)") else {
             error = "Invalid request URL"
             isLoading = false
@@ -136,11 +135,10 @@ class SquareCatalogService: ObservableObject {
             return
         }
         
-        // ✅ UPDATED: Create request body matching fixed backend
         let requestBody: [String: Any] = [
             "organization_id": authService.organizationId,
             "amounts": amounts,
-            "parent_item_id": parentItemId as Any, // Include existing parent if available
+            "parent_item_id": parentItemId as Any,
             "parent_item_name": "Donations",
             "parent_item_description": "Donation preset amounts"
         ]
@@ -219,7 +217,6 @@ class SquareCatalogService: ObservableObject {
             return
         }
         
-        // Create request body
         let requestBody: [String: Any] = [
             "organization_id": authService.organizationId,
             "object_id": id
@@ -248,7 +245,6 @@ class SquareCatalogService: ObservableObject {
                 
                 switch completion {
                 case .finished:
-                    // Remove the item from the local list
                     self.presetDonations.removeAll { $0.id == id }
                     print("✅ Successfully deleted preset donation")
                 case .failure(let error):
@@ -294,22 +290,19 @@ class SquareCatalogService: ObservableObject {
             return
         }
         
-        // ✅ UPDATED: Create line item based on document recommendations
         var lineItem: [String: Any]
         
         if isCustom || catalogItemId == nil {
-            // For custom amounts, use ad-hoc line item (per document)
             lineItem = [
                 "name": "Custom Donation",
                 "quantity": "1",
                 "base_price_money": [
-                    "amount": Int(amount * 100), // Convert to cents
+                    "amount": Int(amount * 100),
                     "currency": "USD"
                 ]
             ]
             print("📝 Creating ad-hoc line item for custom amount: $\(amount)")
         } else {
-            // For preset amounts, use catalog reference (per document)
             lineItem = [
                 "catalog_object_id": catalogItemId!,
                 "quantity": "1"
@@ -317,12 +310,11 @@ class SquareCatalogService: ObservableObject {
             print("📝 Creating catalog line item for preset amount: $\(amount) (ID: \(catalogItemId!))")
         }
         
-        // Create request body
         let requestBody: [String: Any] = [
             "organization_id": authService.organizationId,
             "line_items": [lineItem],
             "reference_id": "donation_\(Int(Date().timeIntervalSince1970))",
-            "state": "OPEN" // Ready for payment
+            "state": "OPEN"
         ]
         
         var request = URLRequest(url: url)
@@ -363,7 +355,6 @@ class SquareCatalogService: ObservableObject {
                             completion(nil, NSError(domain: "com.charitypad", code: 500, userInfo: [NSLocalizedDescriptionKey: error]))
                             print("❌ Order creation backend error: \(error)")
                         } else if let orderId = json["order_id"] as? String {
-                            // Successfully created order
                             self.error = nil
                             completion(orderId, nil)
                             print("✅ Order created successfully: \(orderId)")
