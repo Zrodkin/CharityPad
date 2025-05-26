@@ -1,13 +1,7 @@
-//
-//  SquareCatalogService.swift
-//  CharityPadWSquare
-//
-//  Created by Wilkes Shluchim on 5/21/25.
-//
 import Foundation
 import Combine
 
-/// Structure to represent a donation catalog item
+/// Structure to represent a donation catalog item - UPDATED to match backend response
 struct DonationItem: Identifiable, Codable {
     var id: String
     var parentId: String
@@ -15,6 +9,7 @@ struct DonationItem: Identifiable, Codable {
     var amount: Double
     var formattedAmount: String
     var type: String
+    var ordinal: Int?
     
     enum CodingKeys: String, CodingKey {
         case id
@@ -23,6 +18,26 @@ struct DonationItem: Identifiable, Codable {
         case amount
         case formattedAmount = "formatted_amount"
         case type
+        case ordinal
+    }
+}
+
+/// Parent item information
+struct ParentItem: Identifiable, Codable {
+    var id: String
+    var name: String
+    var description: String?
+    var productType: String?
+    var updatedAt: String?
+    var version: Int?
+    
+    enum CodingKeys: String, CodingKey {
+        case id
+        case name
+        case description
+        case productType = "product_type"
+        case updatedAt = "updated_at"
+        case version
     }
 }
 
@@ -31,9 +46,11 @@ class SquareCatalogService: ObservableObject {
     // MARK: - Published Properties
     
     @Published var presetDonations: [DonationItem] = []
+    @Published var parentItems: [ParentItem] = []
     @Published var isLoading: Bool = false
     @Published var error: String? = nil
     @Published var parentItemId: String? = nil
+    @Published var lastSyncTime: Date? = nil
     
     // MARK: - Private Properties
     
@@ -58,13 +75,14 @@ class SquareCatalogService: ObservableObject {
         isLoading = true
         error = nil
         
-        let urlString = "\(SquareConfig.backendBaseURL)\(SquareConfig.statusEndpoint)?organization_id=\(authService.organizationId)"
-        
+        // ✅ UPDATED: Use corrected endpoint URL
         guard let url = URL(string: "\(SquareConfig.backendBaseURL)/api/square/catalog/list?organization_id=\(authService.organizationId)") else {
             error = "Invalid request URL"
             isLoading = false
             return
         }
+        
+        print("📋 Fetching catalog items from: \(url)")
         
         URLSession.shared.dataTaskPublisher(for: url)
             .map { $0.data }
@@ -79,23 +97,30 @@ class SquareCatalogService: ObservableObject {
                     break
                 case .failure(let error):
                     self.error = "Failed to fetch donation items: \(error.localizedDescription)"
+                    print("❌ Catalog fetch error: \(error)")
                 }
             }, receiveValue: { [weak self] response in
                 guard let self = self else { return }
                 
+                // Store parent items and donation items
+                self.parentItems = response.parentItems
+                self.presetDonations = response.donationItems.sorted { $0.amount < $1.amount }
+                
                 // Store parent item ID if available
-                if let firstItem = response.donationItems.first {
-                    self.parentItemId = firstItem.parentId
+                if let firstParent = response.parentItems.first {
+                    self.parentItemId = firstParent.id
                 }
                 
-                // Sort by amount
-                self.presetDonations = response.donationItems.sorted { $0.amount < $1.amount }
-                print("Fetched \(self.presetDonations.count) donation preset amounts")
+                // Update last sync time
+                self.lastSyncTime = Date()
+                
+                print("✅ Fetched \(self.presetDonations.count) donation items with \(self.parentItems.count) parent items")
+                print("📊 Amounts: \(self.presetDonations.map { $0.amount })")
             })
             .store(in: &cancellables)
     }
     
-    /// Save preset donation amounts to Square catalog
+    /// Save preset donation amounts to Square catalog using batch upsert
     func savePresetDonations(amounts: [Double]) {
         guard authService.isAuthenticated else {
             error = "Not connected to Square"
@@ -111,11 +136,13 @@ class SquareCatalogService: ObservableObject {
             return
         }
         
-        // Create request body
+        // ✅ UPDATED: Create request body matching fixed backend
         let requestBody: [String: Any] = [
             "organization_id": authService.organizationId,
             "amounts": amounts,
-            "parent_item_id": parentItemId as Any
+            "parent_item_id": parentItemId as Any, // Include existing parent if available
+            "parent_item_name": "Donations",
+            "parent_item_description": "Donation preset amounts"
         ]
         
         var request = URLRequest(url: url)
@@ -129,6 +156,8 @@ class SquareCatalogService: ObservableObject {
             isLoading = false
             return
         }
+        
+        print("💾 Saving \(amounts.count) preset amounts: \(amounts)")
         
         URLSession.shared.dataTaskPublisher(for: request)
             .map { $0.data }
@@ -145,25 +174,30 @@ class SquareCatalogService: ObservableObject {
                 case .failure(let error):
                     self.error = "Failed to save preset donations: \(error.localizedDescription)"
                     self.isLoading = false
+                    print("❌ Save error: \(error)")
                 }
             }, receiveValue: { [weak self] data in
                 guard let self = self else { return }
                 
                 do {
                     if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                        if let parentId = json["parent_id"] as? String {
+                        if let parentId = json["parent_item_id"] as? String {
                             self.parentItemId = parentId
-                            print("Updated parent item ID: \(parentId)")
+                            print("✅ Updated parent item ID: \(parentId)")
                         }
                         
                         if let error = json["error"] as? String {
                             self.error = error
+                            print("❌ Backend error: \(error)")
                         } else {
                             self.error = nil
+                            self.lastSyncTime = Date()
+                            print("✅ Successfully saved \(amounts.count) preset donations")
                         }
                     }
                 } catch {
                     self.error = "Failed to parse response: \(error.localizedDescription)"
+                    print("❌ Parse error: \(error)")
                 }
             })
             .store(in: &cancellables)
@@ -203,6 +237,8 @@ class SquareCatalogService: ObservableObject {
             return
         }
         
+        print("🗑️ Deleting preset donation: \(id)")
+        
         URLSession.shared.dataTaskPublisher(for: request)
             .map { $0.data }
             .receive(on: DispatchQueue.main)
@@ -214,8 +250,10 @@ class SquareCatalogService: ObservableObject {
                 case .finished:
                     // Remove the item from the local list
                     self.presetDonations.removeAll { $0.id == id }
+                    print("✅ Successfully deleted preset donation")
                 case .failure(let error):
                     self.error = "Failed to delete preset donation: \(error.localizedDescription)"
+                    print("❌ Delete error: \(error)")
                 }
             }, receiveValue: { [weak self] data in
                 guard let self = self else { return }
@@ -224,18 +262,21 @@ class SquareCatalogService: ObservableObject {
                     if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
                         if let error = json["error"] as? String {
                             self.error = error
+                            print("❌ Delete backend error: \(error)")
                         } else {
                             self.error = nil
+                            print("✅ Delete successful")
                         }
                     }
                 } catch {
                     self.error = "Failed to parse response: \(error.localizedDescription)"
+                    print("❌ Delete parse error: \(error)")
                 }
             })
             .store(in: &cancellables)
     }
     
-    /// Create a donation order with line items
+    /// Create a donation order with line items (for order-based payment flow)
     func createDonationOrder(amount: Double, isCustom: Bool = false, catalogItemId: String? = nil, completion: @escaping (String?, Error?) -> Void) {
         guard authService.isAuthenticated else {
             error = "Not connected to Square"
@@ -253,11 +294,11 @@ class SquareCatalogService: ObservableObject {
             return
         }
         
-        // Create line item for donation
+        // ✅ UPDATED: Create line item based on document recommendations
         var lineItem: [String: Any]
         
         if isCustom || catalogItemId == nil {
-            // For custom amounts, use ad-hoc line item
+            // For custom amounts, use ad-hoc line item (per document)
             lineItem = [
                 "name": "Custom Donation",
                 "quantity": "1",
@@ -266,19 +307,22 @@ class SquareCatalogService: ObservableObject {
                     "currency": "USD"
                 ]
             ]
+            print("📝 Creating ad-hoc line item for custom amount: $\(amount)")
         } else {
-            // For preset amounts, use catalog reference
+            // For preset amounts, use catalog reference (per document)
             lineItem = [
                 "catalog_object_id": catalogItemId!,
                 "quantity": "1"
             ]
+            print("📝 Creating catalog line item for preset amount: $\(amount) (ID: \(catalogItemId!))")
         }
         
         // Create request body
         let requestBody: [String: Any] = [
             "organization_id": authService.organizationId,
             "line_items": [lineItem],
-            "note": "Donation via CharityPad"
+            "reference_id": "donation_\(Int(Date().timeIntervalSince1970))",
+            "state": "OPEN" // Ready for payment
         ]
         
         var request = URLRequest(url: url)
@@ -307,6 +351,7 @@ class SquareCatalogService: ObservableObject {
                 case .failure(let error):
                     self.error = "Failed to create order: \(error.localizedDescription)"
                     completion(nil, error)
+                    print("❌ Order creation error: \(error)")
                 }
             }, receiveValue: { [weak self] data in
                 guard let self = self else { return }
@@ -316,21 +361,30 @@ class SquareCatalogService: ObservableObject {
                         if let error = json["error"] as? String {
                             self.error = error
                             completion(nil, NSError(domain: "com.charitypad", code: 500, userInfo: [NSLocalizedDescriptionKey: error]))
+                            print("❌ Order creation backend error: \(error)")
                         } else if let orderId = json["order_id"] as? String {
                             // Successfully created order
                             self.error = nil
                             completion(orderId, nil)
+                            print("✅ Order created successfully: \(orderId)")
                         } else {
                             self.error = "Unable to parse order ID from response"
                             completion(nil, NSError(domain: "com.charitypad", code: 500, userInfo: [NSLocalizedDescriptionKey: "Unable to parse order ID from response"]))
+                            print("❌ No order ID in response")
                         }
                     }
                 } catch {
                     self.error = "Failed to parse response: \(error.localizedDescription)"
                     completion(nil, error)
+                    print("❌ Order response parse error: \(error)")
                 }
             })
             .store(in: &cancellables)
+    }
+    
+    /// Find catalog item ID for a specific amount
+    func catalogItemId(for amount: Double) -> String? {
+        return presetDonations.first { $0.amount == amount }?.id
     }
 }
 
@@ -338,32 +392,36 @@ class SquareCatalogService: ObservableObject {
 
 struct CatalogResponse: Codable {
     let donationItems: [DonationItem]
-    let rawItems: [String: Any]?
+    let parentItems: [ParentItem]
+    let pagination: PaginationInfo?
+    let metadata: MetadataInfo?
     
     enum CodingKeys: String, CodingKey {
         case donationItems = "donation_items"
-        case rawItems = "raw_items"
+        case parentItems = "parent_items"
+        case pagination
+        case metadata
     }
+}
+
+struct PaginationInfo: Codable {
+    let cursor: String?
+    let hasMore: Bool
     
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        donationItems = try container.decode([DonationItem].self, forKey: .donationItems)
-        
-        // Handle raw_items as an optional dictionary
-        if let rawItemsData = try? container.decodeIfPresent(Data.self, forKey: .rawItems) {
-            rawItems = try JSONSerialization.jsonObject(with: rawItemsData) as? [String: Any]
-        } else {
-            rawItems = nil
-        }
+    enum CodingKeys: String, CodingKey {
+        case cursor
+        case hasMore = "has_more"
     }
+}
+
+struct MetadataInfo: Codable {
+    let totalVariations: Int
+    let totalParentItems: Int
+    let searchStrategy: String
     
-    func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(donationItems, forKey: .donationItems)
-        
-        if let rawItems = rawItems {
-            let jsonData = try JSONSerialization.data(withJSONObject: rawItems)
-            try container.encode(jsonData, forKey: .rawItems)
-        }
+    enum CodingKeys: String, CodingKey {
+        case totalVariations = "total_variations"
+        case totalParentItems = "total_parent_items"
+        case searchStrategy = "search_strategy"
     }
 }
