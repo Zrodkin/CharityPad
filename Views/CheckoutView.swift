@@ -21,6 +21,8 @@ struct UpdatedCheckoutView: View {
     @State private var showingSquareAuth = false
     @State private var processingState: ProcessingState = .ready
     @State private var orderId: String? = nil
+    @State private var paymentId: String? = nil
+    @State private var useOrderBasedFlow = true // Toggle between order-based and direct payment
     
     // Processing state enum
     enum ProcessingState {
@@ -175,6 +177,13 @@ struct UpdatedCheckoutView: View {
                         .foregroundColor(.white)
                 }
             }
+            
+            // Optional: Show current order ID if available
+            if let orderId = orderId {
+                Text("Order: \(orderId)")
+                    .font(.caption)
+                    .foregroundColor(.white.opacity(0.7))
+            }
         }
         .padding(.vertical)
     }
@@ -195,7 +204,7 @@ struct UpdatedCheckoutView: View {
     private var buttonText: String {
         switch processingState {
         case .ready:
-            return "Process Payment"
+            return useOrderBasedFlow ? "Process Donation" : "Process Payment"
         case .creatingOrder:
             return "Creating Order..."
         case .processingPayment:
@@ -245,9 +254,15 @@ struct UpdatedCheckoutView: View {
                 Text("Your donation has been processed.")
                     .foregroundColor(.white)
                 
-                // Optional: Display order ID
+                // Display order ID and payment ID if available
                 if let orderId = orderId {
-                    Text("Order ID: \(orderId)")
+                    Text("Order: \(orderId)")
+                        .font(.caption)
+                        .foregroundColor(.white.opacity(0.7))
+                }
+                
+                if let paymentId = paymentId {
+                    Text("Payment: \(paymentId)")
                         .font(.caption)
                         .foregroundColor(.white.opacity(0.7))
                 }
@@ -314,7 +329,96 @@ struct UpdatedCheckoutView: View {
         return formatter.string(from: NSNumber(value: amount)) ?? "$\(amount)"
     }
     
+    /// Main payment processing method - chooses between order-based and direct flow
     private func processPayment() {
+        if useOrderBasedFlow {
+            processOrderBasedPayment()
+        } else {
+            processDirectPayment()
+        }
+    }
+    
+    /// NEW: Order-based payment processing flow (recommended)
+    private func processOrderBasedPayment() {
+        // Check if authenticated first
+        if !squareAuthService.isAuthenticated {
+            showingSquareAuth = true
+            return
+        }
+        
+        // Check if reader connected
+        if !paymentService.isReaderConnected {
+            paymentService.paymentError = "Card reader not connected. Please contact staff."
+            showingError = true
+            return
+        }
+        
+        // Reset state
+        resetPaymentState()
+        
+        // Step 1: Create Order
+        processingState = .creatingOrder
+        print("🛒 Starting order-based payment flow for amount: $\(amount)")
+        
+        kioskStore.createDonationOrder(
+            amount: amount,
+            isCustomAmount: isCustomAmount
+        ) { createdOrderId, error in
+            DispatchQueue.main.async {
+                if let error = error {
+                    print("❌ Order creation failed: \(error.localizedDescription)")
+                    self.paymentService.paymentError = "Failed to create order: \(error.localizedDescription)"
+                    self.processingState = .error
+                    self.showingError = true
+                    return
+                }
+                
+                guard let createdOrderId = createdOrderId else {
+                    print("❌ No order ID returned")
+                    self.paymentService.paymentError = "Failed to create order: No order ID returned"
+                    self.processingState = .error
+                    self.showingError = true
+                    return
+                }
+                
+                // Store order ID
+                self.orderId = createdOrderId
+                print("✅ Order created successfully: \(createdOrderId)")
+                
+                // Step 2: Process Payment with Order ID
+                self.processingState = .processingPayment
+                print("💳 Processing payment with order ID: \(createdOrderId)")
+                
+                self.paymentService.processPaymentWithOrder(
+                    amount: self.amount,
+                    orderId: createdOrderId
+                ) { success, transactionId in
+                    DispatchQueue.main.async {
+                        if success {
+                            print("✅ Payment successful! Transaction ID: \(transactionId ?? "N/A")")
+                            
+                            // Record donation
+                            self.donationViewModel.recordDonation(amount: self.amount, transactionId: transactionId)
+                            
+                            // Store payment ID
+                            self.paymentId = transactionId
+                            
+                            // Show success
+                            self.processingState = .completed
+                            self.showingThankYou = true
+                        } else {
+                            print("❌ Payment failed")
+                            self.processingState = .error
+                            self.showingError = true
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    /// Legacy: Direct payment processing flow (fallback)
+    private func processDirectPayment() {
         // Check if authenticated first
         if !squareAuthService.isAuthenticated {
             showingSquareAuth = true
@@ -341,8 +445,8 @@ struct UpdatedCheckoutView: View {
             }
         }
         
-        // Set state to creating order
-        processingState = .creatingOrder
+        // Set state to processing payment
+        processingState = .processingPayment
         
         // Process the payment with catalog integration
         paymentService.processPayment(
@@ -357,6 +461,7 @@ struct UpdatedCheckoutView: View {
                 
                 // Store order ID for display
                 orderId = paymentService.currentOrderId
+                paymentId = transactionId
                 
                 // Show success
                 processingState = .completed
@@ -374,19 +479,20 @@ struct UpdatedCheckoutView: View {
         showingError = false
         showingThankYou = false
         orderId = nil
+        paymentId = nil
     }
 }
 
 struct UpdatedCheckoutView_Previews: PreviewProvider {
     static var previews: some View {
-        UpdatedCheckoutView(amount: 50.0, isCustomAmount: false, onDismiss: {})
+        let authService = SquareAuthService()
+        let catalogService = SquareCatalogService(authService: authService)
+        
+        return UpdatedCheckoutView(amount: 50.0, isCustomAmount: false, onDismiss: {})
             .environmentObject(KioskStore())
             .environmentObject(DonationViewModel())
-            .environmentObject(SquareAuthService())
-            .environmentObject(SquareCatalogService(authService: SquareAuthService()))
-            .environmentObject(SquarePaymentService(
-                authService: SquareAuthService(),
-                catalogService: SquareCatalogService(authService: SquareAuthService())
-            ))
+            .environmentObject(authService)
+            .environmentObject(catalogService)
+            .environmentObject(SquarePaymentService(authService: authService, catalogService: catalogService))
     }
 }

@@ -57,13 +57,6 @@ class KioskStore: ObservableObject {
         service.$error
             .assign(to: \.lastSyncError, on: self)
             .store(in: &cancellables)
-        
-        // ✅ FIXED: Added missing catalog sync connection
-        service.$presetDonations
-            .sink { [weak self] catalogItems in
-                self?.updatePresetDonationsFromCatalog(catalogItems)
-            }
-            .store(in: &cancellables)
     }
     
     /// Load settings from UserDefaults
@@ -194,111 +187,119 @@ class KioskStore: ObservableObject {
     func saveSettings() {
         saveToUserDefaults()
         
-        // If catalog service is connected and authenticated, sync preset amounts
+        // If catalog service is connected, sync preset amounts
         if let catalogService = catalogService {
             syncPresetAmountsWithCatalog(using: catalogService)
         }
         
-        // Post notification that settings were updated
+        // In a real app, you might want to sync with a server here
         NotificationCenter.default.post(name: Notification.Name("KioskSettingsUpdated"), object: nil)
-        
-        print("💾 Kiosk settings saved")
     }
-
+    
     /// Sync preset donation amounts with Square catalog
     func syncPresetAmountsWithCatalog(using service: SquareCatalogService) {
-        print("🔄 Starting catalog sync with \(presetDonations.count) preset donations")
-        
         isSyncingWithCatalog = true
         lastSyncError = nil
         
-        // Extract amounts as doubles, filtering out invalid amounts
-        let amountValues = presetDonations.compactMap { donation -> Double? in
-            guard let amount = Double(donation.amount), amount > 0 else {
-                print("⚠️ Skipping invalid amount: \(donation.amount)")
-                return nil
-            }
-            return amount
-        }
+        // Extract amounts as doubles
+        let amountValues = presetDonations.compactMap { Double($0.amount) }
         
         // Only sync if we have valid amounts
         if !amountValues.isEmpty {
-            print("📤 Syncing amounts: \(amountValues)")
             service.savePresetDonations(amounts: amountValues)
             
             // Update sync status
             lastSyncTime = Date()
             saveToUserDefaults()
+            
+            // Start watching for catalog service changes
+            service.$presetDonations
+                .sink { [weak self] catalogItems in
+                    guard let self = self else { return }
+                    
+                    // Update preset donations with catalog item IDs
+                    self.updatePresetDonationsFromCatalog(catalogItems)
+                }
+                .store(in: &cancellables)
         } else {
-            print("❌ No valid amounts to sync")
             isSyncingWithCatalog = false
-            lastSyncError = "No valid amounts to sync"
         }
     }
-
+    
+    /// Update the DonationViewModel with the current preset amounts
+    func updateDonationViewModel(_ donationViewModel: DonationViewModel) {
+        var numericAmounts: [Double] = []
+        for donation in presetDonations {
+            if let amount = Double(donation.amount) {
+                numericAmounts.append(amount)
+            }
+        }
+        
+        if !numericAmounts.isEmpty {
+            donationViewModel.presetAmounts = numericAmounts
+        }
+    }
+    
     /// Load preset donations from Square catalog
     func loadPresetDonationsFromCatalog() {
         guard let catalogService = catalogService else {
             lastSyncError = "Catalog service not connected"
-            print("❌ Cannot load from catalog: service not connected")
             return
         }
         
-        print("📥 Loading preset donations from catalog")
         isSyncingWithCatalog = true
         lastSyncError = nil
         
-        // Fetch donations from catalog
+        // Load donations from catalog
         catalogService.fetchPresetDonations()
     }
-
-    /// Create an order for a donation using catalog integration
-    func createDonationOrder(amount: Double, isCustomAmount: Bool, completion: @escaping (String?, Error?) -> Void) {
-        guard let catalogService = catalogService else {
-            let error = NSError(domain: "com.charitypad", code: 400, userInfo: [NSLocalizedDescriptionKey: "Catalog service not connected"])
-            completion(nil, error)
+    
+    /// Update preset donations with catalog item IDs
+    private func updatePresetDonationsFromCatalog(_ catalogItems: [DonationItem]) {
+        // Skip if there are no catalog items
+        if catalogItems.isEmpty {
             return
         }
         
-        // If using a preset amount, find the matching catalog item ID
-        var catalogItemId: String? = nil
+        // Create a map of amount to catalog item for easier lookup
+        var catalogItemMap: [Double: DonationItem] = [:]
+        for item in catalogItems {
+            catalogItemMap[item.amount] = item
+        }
         
-        if !isCustomAmount {
-            // Find the preset donation with the matching amount
-            if let donation = presetDonations.first(where: { Double($0.amount) == amount }) {
-                catalogItemId = donation.catalogItemId
-                print("📋 Using catalog item ID: \(catalogItemId ?? "nil") for amount: $\(amount)")
+        // Update local preset donations with catalog item IDs
+        var updatedDonations: [PresetDonation] = []
+        
+        for donation in presetDonations {
+            if let amount = Double(donation.amount),
+               let catalogItem = catalogItemMap[amount] {
+                // Update with catalog info
+                updatedDonations.append(PresetDonation(
+                    id: donation.id,
+                    amount: donation.amount,
+                    catalogItemId: catalogItem.id,
+                    isSync: true
+                ))
             } else {
-                print("⚠️ No catalog item found for preset amount: $\(amount)")
+                // Keep original but mark as not synced
+                updatedDonations.append(PresetDonation(
+                    id: donation.id,
+                    amount: donation.amount,
+                    catalogItemId: donation.catalogItemId,
+                    isSync: false
+                ))
             }
         }
         
-        // Create the order using the catalog service
-        catalogService.createDonationOrder(
-            amount: amount,
-            isCustom: isCustomAmount,
-            catalogItemId: catalogItemId,
-            completion: completion
-        )
+        // Update the published property
+        presetDonations = updatedDonations
+        
+        // Save the updated state
+        saveToUserDefaults()
     }
-
+    
     /// Add a new preset donation amount
     func addPresetDonation(amount: String) {
-        // Validate the amount
-        guard let numericAmount = Double(amount), numericAmount > 0 else {
-            print("❌ Invalid amount for new preset donation: \(amount)")
-            return
-        }
-        
-        // Check if amount already exists
-        let existingAmount = presetDonations.contains { Double($0.amount) == numericAmount }
-        if existingAmount {
-            print("⚠️ Preset amount $\(amount) already exists")
-            return
-        }
-        
-        print("➕ Adding new preset donation: $\(amount)")
-        
         let newDonation = PresetDonation(
             id: UUID().uuidString,
             amount: amount,
@@ -311,25 +312,17 @@ class KioskStore: ObservableObject {
         // Sort by amount
         sortPresetDonations()
         
-        // Save settings (this will trigger catalog sync)
-        saveSettings()
+        // Save settings
+        saveToUserDefaults()
     }
-
+    
     /// Remove a preset donation amount
     func removePresetDonation(at index: Int) {
-        guard index >= 0 && index < presetDonations.count else {
-            print("❌ Invalid index for removing preset donation: \(index)")
-            return
-        }
-        
+        // Check if donation has a catalog item ID
         let donation = presetDonations[index]
-        print("🗑️ Removing preset donation: $\(donation.amount)")
         
-        // If donation has a catalog item ID and is synced, we should delete from catalog
-        if let catalogItemId = donation.catalogItemId,
-           donation.isSync,
-           let catalogService = catalogService {
-            print("🗑️ Deleting from Square catalog: \(catalogItemId)")
+        if let catalogItemId = donation.catalogItemId, let catalogService = catalogService {
+            // Delete from catalog if synced
             catalogService.deletePresetDonation(id: catalogItemId)
         }
         
@@ -337,30 +330,18 @@ class KioskStore: ObservableObject {
         presetDonations.remove(at: index)
         
         // Save settings
-        saveSettings()
+        saveToUserDefaults()
     }
-
+    
     /// Update a preset donation amount
     func updatePresetDonation(at index: Int, amount: String) {
-        guard index >= 0 && index < presetDonations.count else {
-            print("❌ Invalid index for updating preset donation: \(index)")
-            return
-        }
-        
-        // Validate the new amount
-        guard let numericAmount = Double(amount), numericAmount > 0 else {
-            print("❌ Invalid amount for updating preset donation: \(amount)")
-            return
-        }
-        
         let donation = presetDonations[index]
-        print("✏️ Updating preset donation from $\(donation.amount) to $\(amount)")
         
-        // Create updated donation - mark as not synced since amount changed
+        // Create updated donation
         let updatedDonation = PresetDonation(
             id: donation.id,
             amount: amount,
-            catalogItemId: donation.catalogItemId, // Keep existing catalog ID for now
+            catalogItemId: donation.catalogItemId,
             isSync: false // Mark as not synced since amount changed
         )
         
@@ -370,10 +351,10 @@ class KioskStore: ObservableObject {
         // Sort by amount
         sortPresetDonations()
         
-        // Save settings (this will trigger catalog sync)
-        saveSettings()
+        // Save settings
+        saveToUserDefaults()
     }
-
+    
     /// Sort preset donations by amount
     private func sortPresetDonations() {
         presetDonations.sort {
@@ -385,119 +366,63 @@ class KioskStore: ObservableObject {
         }
     }
     
-    // ✅ FIXED: Added missing sync method
-    /// Update preset donations with catalog item IDs and sync status
-    private func updatePresetDonationsFromCatalog(_ catalogItems: [DonationItem]) {
-        print("🔄 Updating preset donations from catalog: \(catalogItems.count) items")
-        
-        // Skip if there are no catalog items
-        if catalogItems.isEmpty {
-            print("⚠️ No catalog items to sync")
+    // MARK: - NEW: Order Creation Method
+    
+    /// Create an order for a donation using the catalog service
+    func createDonationOrder(
+        amount: Double,
+        isCustomAmount: Bool,
+        completion: @escaping (String?, Error?) -> Void
+    ) {
+        guard let catalogService = catalogService else {
+            let error = NSError(
+                domain: "com.charitypad",
+                code: 400,
+                userInfo: [NSLocalizedDescriptionKey: "Catalog service not connected"]
+            )
+            completion(nil, error)
             return
         }
         
-        // Create a map of amount to catalog item for easier lookup
-        var catalogItemMap: [Double: DonationItem] = [:]
-        for item in catalogItems {
-            catalogItemMap[item.amount] = item
-            print("📋 Catalog item: $\(item.amount) -> ID: \(item.id)")
-        }
+        print("🛒 Creating donation order via KioskStore")
+        print("💰 Amount: $\(amount)")
+        print("🎯 Is Custom: \(isCustomAmount)")
         
-        // Update local preset donations with catalog item IDs
-        var updatedDonations: [PresetDonation] = []
-        var hasChanges = false
+        // If using a preset amount, find the matching catalog item ID
+        var catalogItemId: String? = nil
         
-        for donation in presetDonations {
-            guard let amount = Double(donation.amount) else {
-                print("⚠️ Invalid amount in preset donation: \(donation.amount)")
-                // Keep original but mark as not synced
-                updatedDonations.append(PresetDonation(
-                    id: donation.id,
-                    amount: donation.amount,
-                    catalogItemId: nil,
-                    isSync: false
-                ))
-                continue
-            }
-            
-            if let catalogItem = catalogItemMap[amount] {
-                // Update with catalog info
-                let updatedDonation = PresetDonation(
-                    id: donation.id,
-                    amount: donation.amount,
-                    catalogItemId: catalogItem.id,
-                    isSync: true
-                )
-                updatedDonations.append(updatedDonation)
-                
-                // Check if this is actually a change
-                if donation.catalogItemId != catalogItem.id || donation.isSync != true {
-                    hasChanges = true
-                    print("✅ Synced: $\(amount) -> ID: \(catalogItem.id)")
-                }
+        if !isCustomAmount {
+            // Find the preset donation with the matching amount
+            if let donation = presetDonations.first(where: { Double($0.amount) == amount }) {
+                catalogItemId = donation.catalogItemId
+                print("📋 Found catalog item ID: \(catalogItemId ?? "nil")")
             } else {
-                // Keep original but mark as not synced
-                let updatedDonation = PresetDonation(
-                    id: donation.id,
-                    amount: donation.amount,
-                    catalogItemId: donation.catalogItemId,
-                    isSync: false
-                )
-                updatedDonations.append(updatedDonation)
-                
-                // Check if this is a change in sync status
-                if donation.isSync != false {
-                    hasChanges = true
-                    print("❌ Not synced: $\(amount) (not found in catalog)")
+                print("⚠️ No catalog item found for preset amount $\(amount)")
+            }
+        }
+        
+        // Use the catalog service to create the order
+        catalogService.createDonationOrder(
+            amount: amount,
+            isCustom: isCustomAmount,
+            catalogItemId: catalogItemId,
+            completion: { orderId, error in
+                if let error = error {
+                    print("❌ Order creation failed: \(error.localizedDescription)")
+                    completion(nil, error)
+                } else if let orderId = orderId {
+                    print("✅ Order created successfully: \(orderId)")
+                    completion(orderId, nil)
+                } else {
+                    let error = NSError(
+                        domain: "com.charitypad",
+                        code: 500,
+                        userInfo: [NSLocalizedDescriptionKey: "No order ID returned"]
+                    )
+                    print("❌ No order ID returned")
+                    completion(nil, error)
                 }
             }
-        }
-        
-        // Also add any catalog items that don't have corresponding preset donations
-        for catalogItem in catalogItems {
-            let existsInPresets = updatedDonations.contains { donation in
-                Double(donation.amount) == catalogItem.amount
-            }
-            
-            if !existsInPresets {
-                print("➕ Adding catalog item not in presets: $\(catalogItem.amount)")
-                let newDonation = PresetDonation(
-                    id: UUID().uuidString,
-                    amount: String(format: "%.0f", catalogItem.amount), // Remove decimal if whole number
-                    catalogItemId: catalogItem.id,
-                    isSync: true
-                )
-                updatedDonations.append(newDonation)
-                hasChanges = true
-            }
-        }
-        
-        // Sort by amount
-        updatedDonations.sort {
-            guard let amount1 = Double($0.amount),
-                  let amount2 = Double($1.amount) else {
-                return false
-            }
-            return amount1 < amount2
-        }
-        
-        // Only update if there are actual changes
-        if hasChanges {
-            print("💾 Updating preset donations with \(updatedDonations.count) items")
-            presetDonations = updatedDonations
-            
-            // Update sync status
-            isSyncingWithCatalog = false
-            lastSyncTime = Date()
-            lastSyncError = nil
-            
-            // Save the updated state
-            saveToUserDefaults()
-            
-            print("✅ Catalog sync completed successfully")
-        } else {
-            print("ℹ️ No changes detected in catalog sync")
-            isSyncingWithCatalog = false
-        }
+        )
     }
 }

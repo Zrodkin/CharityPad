@@ -85,11 +85,15 @@ struct ContentView: View {
 
 struct ContentView_Previews: PreviewProvider {
     static var previews: some View {
-        ContentView()
+        let authService = SquareAuthService()
+        let catalogService = SquareCatalogService(authService: authService)
+        
+        return ContentView()
             .environmentObject(DonationViewModel())
             .environmentObject(OrganizationStore())
             .environmentObject(KioskStore())
-            .environmentObject(SquareAuthService())
-            .environmentObject(SquarePaymentService(authService: SquareAuthService()))
+            .environmentObject(authService)
+            .environmentObject(catalogService)
+            .environmentObject(SquarePaymentService(authService: authService, catalogService: catalogService))
     }
 }

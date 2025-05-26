@@ -36,6 +36,7 @@ class SquarePaymentService: NSObject, ObservableObject {
     
     private var readerService: SquareReaderService?
     private var paymentHandle: PaymentHandle?
+    private let idempotencyKeyManager = IdempotencyKeyManager()
     
     // Completion handlers for different flows
     private var mainPaymentCompletion: ((Bool, String?) -> Void)?
@@ -84,152 +85,6 @@ class SquarePaymentService: NSObject, ObservableObject {
     
     // MARK: - Public Methods
     
-    /// Process a payment using Square SDK directly (current working approach)
-    func processPayment(amount: Double, allowOffline: Bool, supportsOfflinePayments: Bool, completion: @escaping (Bool, String?) -> Void) {
-        // Ensure SDK is initialized
-        guard let _ = try? MobilePaymentsSDK.shared else {
-            DispatchQueue.main.async { [weak self] in
-                self?.updatePaymentError("Square SDK not initialized")
-                completion(false, nil)
-            }
-            return
-        }
-        
-        // Verify authentication
-        guard let authService = authService, authService.isAuthenticated else {
-            DispatchQueue.main.async { [weak self] in
-                self?.updatePaymentError("Not authenticated with Square")
-                completion(false, nil)
-            }
-            return
-        }
-        
-        // Ensure SDK is authorized
-        guard MobilePaymentsSDK.shared.authorizationManager.state == .authorized else {
-            DispatchQueue.main.async { [weak self] in
-                self?.paymentService?.initializeSDK()
-                completion(false, nil)
-            }
-            return
-        }
-        
-        DispatchQueue.main.async { [weak self] in
-            self?.updateIsProcessingPayment(true)
-            self?.updatePaymentError(nil)
-        }
-        
-        // Calculate amount in cents
-        let amountInCents = UInt(amount * 100)
-        
-        // Find the view controller to present the payment UI
-        guard let presentedVC = getTopViewController() else {
-            DispatchQueue.main.async { [weak self] in
-                self?.updateIsProcessingPayment(false)
-                self?.updatePaymentError("Unable to find view controller to present payment UI")
-                completion(false, nil)
-            }
-            return
-        }
-        
-        // Generate a transaction ID based on amount and timestamp
-        let transactionId = "txn_\(Int(amount * 100))_\(Int(Date().timeIntervalSince1970))"
-        
-        // Get or create idempotency key for this transaction
-        let idempotencyKey = idempotencyKeyManager.getKey(for: transactionId)
-        
-        // Determine the processing mode based on offline support
-        let processingMode: ProcessingMode
-        if allowOffline && supportsOfflinePayments {
-            processingMode = .autoDetect  // Will try online, fall back to offline if needed
-        } else {
-            processingMode = .onlineOnly  // Only process payments online
-        }
-        
-        // Create MoneyAmount with correct type
-        let moneyAmount = MoneyAmount(amount: amountInCents, currency: .USD)
-        
-        // Create payment parameters with appropriate processing mode
-        let paymentParameters = PaymentParameters(
-            idempotencyKey: idempotencyKey,
-            amountMoney: moneyAmount,  // Using MoneyAmount instead of Money
-            processingMode: processingMode
-        )
-        
-        // Create prompt parameters
-        let promptParameters = PromptParameters(
-            mode: .default,
-            additionalMethods: .all
-        )
-        
-        // Create payment delegate
-        let paymentDelegate = PaymentDelegate(
-            service: self,
-            transactionId: transactionId,
-            idempotencyManager: idempotencyKeyManager,
-            supportsOfflinePayments: supportsOfflinePayments,
-            completion: completion
-        )
-        
-        // Start the payment
-        paymentHandle = MobilePaymentsSDK.shared.paymentManager.startPayment(
-            paymentParameters,
-            promptParameters: promptParameters,
-            from: presentedVC,
-            delegate: paymentDelegate
-        )
-    }
-    
-    /// Future enhancement: Process payment with order creation + backend processing
-    func processPaymentWithOrderCreation(amount: Double,
-                                        isCustomAmount: Bool = false,
-                                        catalogItemId: String? = nil,
-                                        completion: @escaping (Bool, String?) -> Void) {
-        
-        // This method is prepared for future backend integration
-        // Currently not used, but follows the document recommendations
-        
-        guard authService.isAuthenticated else {
-            paymentError = "Not connected to Square"
-            completion(false, nil)
-            return
-        }
-        
-        // Set processing state
-        isProcessingPayment = true
-        paymentError = nil
-        currentOrderId = nil
-        currentProcessingMode = .orderBased
-        mainPaymentCompletion = completion
-        
-        // Step 1: Create Order
-        createOrder(amount: amount, isCustomAmount: isCustomAmount, catalogItemId: catalogItemId) { [weak self] orderId, error in
-            guard let self = self else { return }
-            
-            if let error = error {
-                self.handlePaymentError(error)
-                completion(false, nil)
-                return
-            }
-            
-            guard let orderId = orderId else {
-                self.handlePaymentError(NSError(domain: "com.charitypad", code: 400, userInfo: [NSLocalizedDescriptionKey: "No order ID returned"]))
-                completion(false, nil)
-                return
-            }
-            
-            self.currentOrderId = orderId
-            
-            // Step 2: Process payment with SDK (will handle completion through delegate)
-            self.processDirectPayment(amount: amount)
-            
-            // Note: In a full backend implementation, you would:
-            // 1. Collect payment token from SDK
-            // 2. Send token + order ID to backend
-            // 3. Backend processes payment with Square Payments API
-            // For now, we're using direct SDK payment which works fine
-        }
-    }
-    
     /// Check if the SDK is authorized
     func isSDKAuthorized() -> Bool {
         return sdkInitializationService.isSDKAuthorized()
@@ -256,32 +111,78 @@ class SquarePaymentService: NSObject, ObservableObject {
         sdkInitializationService.deauthorizeSDK(completion: completion)
     }
     
-    // MARK: - Private Methods
-    
-    /// Process payment directly through SDK (current working approach)
-    private func processDirectPayment(amount: Double) {
-        guard isSDKAuthorized() else {
-            handlePaymentError(NSError(domain: "com.charitypad", code: 401, userInfo: [NSLocalizedDescriptionKey: "SDK not authorized"]))
+    /// Process payment (updated to match CheckoutView expectations)
+    func processPayment(
+        amount: Double,
+        isCustomAmount: Bool = false,
+        catalogItemId: String? = nil,
+        completion: @escaping (Bool, String?) -> Void
+    ) {
+        print("⚠️ Using legacy direct payment flow. Consider using processPaymentWithOrder for better itemization.")
+        
+        // Ensure SDK is initialized
+        guard let _ = try? MobilePaymentsSDK.shared else {
+            DispatchQueue.main.async { [weak self] in
+                self?.paymentError = "Square SDK not initialized"
+                completion(false, nil)
+            }
             return
         }
         
-        // Find the top view controller to present the payment UI
-        guard let presentedVC = getTopViewController() else {
-            handlePaymentError(NSError(domain: "com.charitypad", code: 500, userInfo: [NSLocalizedDescriptionKey: "Unable to present payment UI"]))
+        // Verify authentication
+        guard authService.isAuthenticated else {
+            DispatchQueue.main.async { [weak self] in
+                self?.paymentError = "Not authenticated with Square"
+                completion(false, nil)
+            }
             return
         }
         
-        // Generate a unique idempotency key for this payment
-        let idempotencyKey = UUID().uuidString
+        // Ensure SDK is authorized
+        guard MobilePaymentsSDK.shared.authorizationManager.state == .authorized else {
+            DispatchQueue.main.async { [weak self] in
+                self?.initializeSDK()
+                self?.paymentError = "SDK not authorized"
+                completion(false, nil)
+            }
+            return
+        }
         
-        // Create MoneyAmount instead of Money
+        DispatchQueue.main.async { [weak self] in
+            self?.isProcessingPayment = true
+            self?.paymentError = nil
+        }
+        
+        // Calculate amount in cents
         let amountInCents = UInt(amount * 100)
+        
+        // Find the view controller to present the payment UI
+        guard let presentedVC = getTopViewController() else {
+            DispatchQueue.main.async { [weak self] in
+                self?.isProcessingPayment = false
+                self?.paymentError = "Unable to find view controller to present payment UI"
+                completion(false, nil)
+            }
+            return
+        }
+        
+        // Generate a transaction ID based on amount and timestamp
+        let transactionId = "txn_\(Int(amount * 100))_\(Int(Date().timeIntervalSince1970))"
+        
+        // Get or create idempotency key for this transaction
+        let idempotencyKey = idempotencyKeyManager.getKey(for: transactionId) ?? {
+            let newKey = UUID().uuidString
+            idempotencyKeyManager.store(id: transactionId, idempotencyKey: newKey)
+            return newKey
+        }()
+        
+        // Create MoneyAmount with correct type
         let moneyAmount = MoneyAmount(amount: amountInCents, currency: .USD)
         
         // Create payment parameters with correct types
         let paymentParameters = PaymentParameters(
             idempotencyKey: idempotencyKey,
-            amountMoney: moneyAmount,  // Using MoneyAmount instead of Money
+            amountMoney: moneyAmount,
             processingMode: supportsOfflinePayments ? .autoDetect : .onlineOnly
         )
         
@@ -290,6 +191,9 @@ class SquarePaymentService: NSObject, ObservableObject {
             mode: .default,
             additionalMethods: .all
         )
+        
+        // Store completion for delegate
+        mainPaymentCompletion = completion
         
         // Start the payment
         paymentHandle = MobilePaymentsSDK.shared.paymentManager.startPayment(
@@ -300,96 +204,7 @@ class SquarePaymentService: NSObject, ObservableObject {
         )
     }
     
-    /// Create an order for a donation (prepared for future backend integration)
-    private func createOrder(amount: Double,
-                           isCustomAmount: Bool,
-                           catalogItemId: String?,
-                           completion: @escaping (String?, Error?) -> Void) {
-        // Create line item for the order
-        var lineItem: [String: Any]
-        
-        if isCustomAmount || catalogItemId == nil {
-            // For custom amounts, use ad-hoc line item
-            lineItem = [
-                "name": "Custom Donation",
-                "quantity": "1",
-                "base_price_money": [
-                    "amount": Int(amount * 100), // Convert to cents
-                    "currency": "USD"
-                ]
-            ]
-        } else {
-            // For preset amounts, use catalog reference
-            lineItem = [
-                "catalog_object_id": catalogItemId!,
-                "quantity": "1"
-            ]
-        }
-        
-        // Create request body
-        let requestBody: [String: Any] = [
-            "organization_id": authService.organizationId,
-            "line_items": [lineItem],
-            "note": "Donation via CharityPad"
-        ]
-        
-        guard let url = URL(string: "\(SquareConfig.backendBaseURL)/api/square/catalog/create") else {
-            completion(nil, NSError(domain: "com.charitypad", code: 400, userInfo: [NSLocalizedDescriptionKey: "Invalid URL"]))
-            return
-        }
-        
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.addValue("application/json", forHTTPHeaderField: "Content-Type")
-        
-        do {
-            request.httpBody = try JSONSerialization.data(withJSONObject: requestBody)
-        } catch {
-            completion(nil, error)
-            return
-        }
-        
-        URLSession.shared.dataTask(with: request) { data, response, error in
-            DispatchQueue.main.async {
-                if let error = error {
-                    completion(nil, error)
-                    return
-                }
-                
-                guard let data = data else {
-                    completion(nil, NSError(domain: "com.charitypad", code: 400, userInfo: [NSLocalizedDescriptionKey: "No data returned"]))
-                    return
-                }
-                
-                do {
-                    if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                        if let error = json["error"] as? String {
-                            completion(nil, NSError(domain: "com.charitypad", code: 500, userInfo: [NSLocalizedDescriptionKey: error]))
-                        } else if let orderId = json["order_id"] as? String {
-                            completion(orderId, nil)
-                        } else {
-                            completion(nil, NSError(domain: "com.charitypad", code: 500, userInfo: [NSLocalizedDescriptionKey: "Unable to parse order ID"]))
-                        }
-                    } else {
-                        completion(nil, NSError(domain: "com.charitypad", code: 500, userInfo: [NSLocalizedDescriptionKey: "Invalid response format"]))
-                    }
-                } catch {
-                    completion(nil, NSError(domain: "com.charitypad", code: 500, userInfo: [NSLocalizedDescriptionKey: "Failed to parse response: \(error.localizedDescription)"]))
-                }
-            }
-        }.resume()
-    }
-    
-    /// Handle payment errors
-    private func handlePaymentError(_ error: Error) {
-        isProcessingPayment = false
-        paymentError = error.localizedDescription
-        print("Payment error: \(error.localizedDescription)")
-        
-        // Call completion if available
-        mainPaymentCompletion?(false, nil)
-        mainPaymentCompletion = nil
-    }
+    // MARK: - Private Methods
     
     /// Get the top view controller to present payment UI
     private func getTopViewController() -> UIViewController? {
@@ -422,7 +237,6 @@ class SquarePaymentService: NSObject, ObservableObject {
 
 extension SquarePaymentService: PaymentManagerDelegate {
     
-    // REQUIRED: Missing method that needs to be added
     func paymentManager(_ paymentManager: PaymentManager, didStart payment: Payment) {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
@@ -433,8 +247,7 @@ extension SquarePaymentService: PaymentManagerDelegate {
             self.isProcessingPayment = true
             self.paymentError = nil
             
-            // You can add additional logic here if needed
-            // For example, updating the connection status
+            // Update the connection status
             self.connectionStatus = "Processing payment..."
         }
     }
@@ -450,7 +263,10 @@ extension SquarePaymentService: PaymentManagerDelegate {
             
             print("Payment successful with ID: \(String(describing: payment.id))")
             
-            // Handle completion based on processing mode
+            // For successful payments, keep the idempotency key (don't remove it)
+            // This prevents duplicate charges if the same payment is attempted again
+            
+            // Handle completion
             self.mainPaymentCompletion?(true, payment.id)
             self.mainPaymentCompletion = nil
         }
@@ -467,7 +283,40 @@ extension SquarePaymentService: PaymentManagerDelegate {
             
             print("Payment failed: \(error.localizedDescription)")
             
-            // Handle completion based on processing mode
+            // Enhanced error handling based on your SquarePaymentProcessingService
+            let nsError = error as NSError
+            
+            // Check if this is a retryable error or should remove idempotency key
+            var shouldRemoveKey = true
+            
+            if let paymentError = PaymentError(rawValue: nsError.code) {
+                switch paymentError {
+                case .idempotencyKeyReused:
+                    // Don't remove key for duplicate payment attempts
+                    shouldRemoveKey = false
+                    
+                case .noNetwork:
+                    // Keep key if offline payments are supported
+                    shouldRemoveKey = !self.supportsOfflinePayments
+                    
+                case .paymentAlreadyInProgress:
+                    // Don't remove key since payment is still in progress
+                    shouldRemoveKey = false
+                    
+                case .timedOut:
+                    // Remove key for timeout so user can retry
+                    shouldRemoveKey = true
+                    
+                default:
+                    // Remove key for most other errors
+                    shouldRemoveKey = true
+                }
+            }
+            
+            // Note: We can't easily access the transaction ID here, so we'll let the
+            // calling code handle idempotency key cleanup based on the error type
+            
+            // Handle completion
             self.mainPaymentCompletion?(false, nil)
             self.mainPaymentCompletion = nil
         }
@@ -484,9 +333,166 @@ extension SquarePaymentService: PaymentManagerDelegate {
             
             print("Payment was canceled by user")
             
-            // Handle completion based on processing mode
+            // For cancelled payments, we should remove the idempotency key
+            // so the user can try again with the same amount
+            // Note: The calling code should handle this cleanup
+            
+            // Handle completion
             self.mainPaymentCompletion?(false, nil)
             self.mainPaymentCompletion = nil
         }
+    }
+}
+
+// MARK: - Order-Based Payment Processing Extension
+
+extension SquarePaymentService {
+    
+    /// NEW: Process payment with order integration (recommended flow)
+    func processPaymentWithOrder(
+        amount: Double,
+        orderId: String,
+        allowOffline: Bool = true,
+        completion: @escaping (Bool, String?) -> Void
+    ) {
+        print("🚀 Starting order-based payment processing")
+        print("💰 Amount: $\(amount)")
+        print("🛒 Order ID: \(orderId)")
+        
+        // Ensure SDK is initialized
+        guard let _ = try? MobilePaymentsSDK.shared else {
+            DispatchQueue.main.async { [weak self] in
+                self?.paymentError = "Square SDK not initialized"
+                completion(false, nil)
+            }
+            return
+        }
+        
+        // Verify authentication
+        guard authService.isAuthenticated else {
+            DispatchQueue.main.async { [weak self] in
+                self?.paymentError = "Not authenticated with Square"
+                completion(false, nil)
+            }
+            return
+        }
+        
+        // Ensure SDK is authorized
+        guard MobilePaymentsSDK.shared.authorizationManager.state == .authorized else {
+            DispatchQueue.main.async { [weak self] in
+                self?.initializeSDK()
+                self?.paymentError = "SDK not authorized"
+                completion(false, nil)
+            }
+            return
+        }
+        
+        DispatchQueue.main.async { [weak self] in
+            self?.isProcessingPayment = true
+            self?.paymentError = nil
+            self?.currentOrderId = orderId
+        }
+        
+        // Calculate amount in cents
+        let amountInCents = UInt(amount * 100)
+        
+        // Find the view controller to present the payment UI
+        guard let presentedVC = getTopViewController() else {
+            DispatchQueue.main.async { [weak self] in
+                self?.isProcessingPayment = false
+                self?.paymentError = "Unable to find view controller to present payment UI"
+                completion(false, nil)
+            }
+            return
+        }
+        
+        // Generate a transaction ID based on order ID and timestamp
+        let transactionId = "txn_\(String(orderId.suffix(8)))_\(Int(Date().timeIntervalSince1970))"
+        
+        // Get or create idempotency key for this transaction
+        let idempotencyKey = idempotencyKeyManager.getKey(for: transactionId) ?? {
+            let newKey = UUID().uuidString
+            idempotencyKeyManager.store(id: transactionId, idempotencyKey: newKey)
+            return newKey
+        }()
+        
+        // Determine the processing mode based on offline support
+        let processingMode: ProcessingMode
+        if allowOffline && supportsOfflinePayments {
+            processingMode = .autoDetect  // Will try online, fall back to offline if needed
+        } else {
+            processingMode = .onlineOnly  // Only process payments online
+        }
+        
+        // Create MoneyAmount with correct type
+        let moneyAmount = MoneyAmount(amount: amountInCents, currency: .USD)
+        
+        // ✨ KEY ENHANCEMENT: Create payment parameters with ORDER ID
+        let paymentParameters = PaymentParameters(
+            idempotencyKey: idempotencyKey,
+            amountMoney: moneyAmount,
+            processingMode: processingMode
+        )
+        
+        // 🎯 THIS IS THE CRITICAL ADDITION: Set the order ID
+        paymentParameters.orderID = orderId
+        
+        // Optional: Add reference ID for tracking
+        paymentParameters.referenceID = "donation_\(transactionId)"
+        
+        // Optional: Add note for clarity
+        paymentParameters.note = "Donation via CharityPad"
+        
+        print("📋 Payment Parameters:")
+        print("   💳 Amount: \(amountInCents) cents")
+        print("   🛒 Order ID: \(orderId)")
+        print("   🔑 Idempotency Key: \(idempotencyKey)")
+        print("   📱 Processing Mode: \(processingMode)")
+        
+        // Create prompt parameters
+        let promptParameters = PromptParameters(
+            mode: .default,
+            additionalMethods: .all
+        )
+        
+        // Store completion for delegate
+        mainPaymentCompletion = completion
+        
+        // Start the payment with order integration
+        print("🚀 Starting Square payment with order integration...")
+        paymentHandle = MobilePaymentsSDK.shared.paymentManager.startPayment(
+            paymentParameters,
+            promptParameters: promptParameters,
+            from: presentedVC,
+            delegate: self  // Use existing delegate
+        )
+    }
+    
+    // MARK: - Helper Methods for Order Integration
+    
+    /// Handle successful payment completion
+    private func handlePaymentSuccess(transactionId: String, paymentId: String?) {
+        // Keep idempotency key for successful payments (don't remove)
+        // This helps prevent duplicate payments if the same transaction is attempted again
+        print("✅ Payment successful, keeping idempotency key for transaction: \(transactionId)")
+    }
+    
+    /// Handle failed payment
+    private func handlePaymentFailure(transactionId: String, shouldRetry: Bool = true) {
+        if shouldRetry {
+            // For retryable failures, keep the idempotency key
+            print("⚠️ Payment failed but retryable, keeping idempotency key for transaction: \(transactionId)")
+        } else {
+            // For non-retryable failures, remove the idempotency key
+            idempotencyKeyManager.removeKey(for: transactionId)
+            print("❌ Payment failed permanently, removed idempotency key for transaction: \(transactionId)")
+        }
+    }
+    
+    /// Handle cancelled payment
+    private func handlePaymentCancellation(transactionId: String) {
+        // Remove idempotency key for cancelled payments so user can try again
+        idempotencyKeyManager.removeKey(for: transactionId)
+        print("🚫 Payment cancelled, removed idempotency key for transaction: \(transactionId)")
     }
 }
