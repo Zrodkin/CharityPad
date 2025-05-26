@@ -26,7 +26,6 @@ class SquarePaymentService: NSObject, ObservableObject {
     
     private let authService: SquareAuthService
     private let sdkInitializationService: SquareSDKInitializationService
-    private let readerConnectionService: SquareReaderConnectionService
     private let paymentProcessingService: SquarePaymentProcessingService
     private let permissionService: SquarePermissionService
     private let offlinePaymentService: SquareOfflinePaymentService
@@ -56,7 +55,7 @@ class SquarePaymentService: NSObject, ObservableObject {
         
         // Initialize services
         self.sdkInitializationService = SquareSDKInitializationService()
-        self.readerConnectionService = SquareReaderConnectionService()
+        self.readerConnectionService = SquareReaderService()
         self.paymentProcessingService = SquarePaymentProcessingService()
         self.permissionService = SquarePermissionService()
         self.offlinePaymentService = SquareOfflinePaymentService()
