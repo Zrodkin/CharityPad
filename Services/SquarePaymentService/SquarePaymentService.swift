@@ -39,10 +39,10 @@ class SquarePaymentService: NSObject, ObservableObject {
     
     // Completion handlers for different flows
     private var mainPaymentCompletion: ((Bool, String?) -> Void)?
-    private var currentProcessingMode: ProcessingMode = .direct
+    private var currentProcessingMode: InternalProcessingMode = .direct
     
-    // Processing modes
-    private enum ProcessingMode {
+    // Processing modes - renamed to avoid conflict with Square SDK's ProcessingMode
+    private enum InternalProcessingMode {
         case direct          // Direct SDK payment (current working approach)
         case orderBased     // Order creation + backend processing (future enhancement)
     }
@@ -55,7 +55,6 @@ class SquarePaymentService: NSObject, ObservableObject {
         
         // Initialize services
         self.sdkInitializationService = SquareSDKInitializationService()
-        self.readerConnectionService = SquareReaderService()
         self.paymentProcessingService = SquarePaymentProcessingService()
         self.permissionService = SquarePermissionService()
         self.offlinePaymentService = SquareOfflinePaymentService()
@@ -65,7 +64,6 @@ class SquarePaymentService: NSObject, ObservableObject {
         // Configure services with dependencies
         self.sdkInitializationService.configure(with: authService, paymentService: self)
         self.permissionService.configure(with: self)
-        self.readerConnectionService.configure(with: self, permissionService: permissionService)
         self.paymentProcessingService.configure(with: self, authService: authService)
         self.offlinePaymentService.configure(with: self)
         
@@ -96,13 +94,15 @@ class SquarePaymentService: NSObject, ObservableObject {
     
     /// Connect to a Square reader
     func connectToReader() {
-        readerConnectionService.connectToReader()
+        // Use the injected reader service if available
+        readerService?.connectToReader()
     }
     
-    /// Set the reader service
+    /// Set the reader service and configure it
     func setReaderService(_ readerService: SquareReaderService) {
         self.readerService = readerService
-        self.readerConnectionService.setReaderService(readerService)
+        // Configure the reader service with this payment service and permission service
+        readerService.configure(with: self, permissionService: permissionService)
     }
     
     /// Deauthorize the Square SDK
@@ -175,14 +175,14 @@ class SquarePaymentService: NSObject, ObservableObject {
             return newKey
         }()
         
-        // Create MoneyAmount with correct type
-        let moneyAmount = MoneyAmount(amount: amountInCents, currency: .USD)
+        // Create Money object (which conforms to MoneyAmount protocol)
+        let moneyAmount = Money(amount: amountInCents, currency: .USD)
         
-        // Create payment parameters with correct types
+        // Create payment parameters with correct types - using Square SDK's ProcessingMode
         let paymentParameters = PaymentParameters(
             idempotencyKey: idempotencyKey,
             amountMoney: moneyAmount,
-            processingMode: supportsOfflinePayments ? .autoDetect : .onlineOnly
+            processingMode: supportsOfflinePayments ? ProcessingMode.autoDetect : ProcessingMode.onlineOnly
         )
         
         // Create prompt parameters
@@ -415,7 +415,7 @@ extension SquarePaymentService {
             return newKey
         }()
         
-        // Determine the processing mode based on offline support
+        // Determine the processing mode based on offline support - using Square SDK's ProcessingMode
         let processingMode: ProcessingMode
         if allowOffline && supportsOfflinePayments {
             processingMode = .autoDetect  // Will try online, fall back to offline if needed
@@ -423,8 +423,8 @@ extension SquarePaymentService {
             processingMode = .onlineOnly  // Only process payments online
         }
         
-        // Create MoneyAmount with correct type
-        let moneyAmount = MoneyAmount(amount: amountInCents, currency: .USD)
+        // Create Money object (which conforms to MoneyAmount protocol)
+        let moneyAmount = Money(amount: amountInCents, currency: .USD)
         
         // ✨ KEY ENHANCEMENT: Create payment parameters with ORDER ID
         let paymentParameters = PaymentParameters(
